@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<extension type="plugin" group="task" method="upgrade">
+	<name>PLG_TASK_XMRPAYSETTLE</name>
+	<author>SlowBearDigger</author>
+	<creationDate>June 2026</creationDate>
+	<copyright>(C) 2026 SlowBearDigger. MIT licensed.</copyright>
+	<license>https://opensource.org/licenses/MIT MIT</license>
+	<authorEmail>slowbeardigger@proton.me</authorEmail>
+	<authorUrl>https://github.com/SlowBearDigger</authorUrl>
+	<version>1.0.0</version>
+	<description>PLG_TASK_XMRPAYSETTLE_XML_DESCRIPTION</description>
+	<namespace path="src">XmrPay\Plugin\Task\XmrpaySettle</namespace>
+	<files>
+		<folder plugin="xmrpaysettle">services</folder>
+		<folder>src</folder>
+		<folder>language</folder>
+	</files>
+	<languages>
+		<language tag="en-GB">language/en-GB/plg_task_xmrpaysettle.ini</language>
+		<language tag="en-GB">language/en-GB/plg_task_xmrpaysettle.sys.ini</language>
+	</languages>
+</extension>
