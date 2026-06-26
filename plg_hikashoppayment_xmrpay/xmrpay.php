@@ -19,6 +19,7 @@ require_once __DIR__ . '/HikashopOrderStore.php';
 use XmrPay\Adapter\Gateway;
 use XmrPay\Adapter\Settler;
 
+#[\AllowDynamicProperties]
 class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
 {
     public $name     = 'xmrpay';
@@ -55,6 +56,10 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         $element->payment_params->nodes             = '';
         $element->payment_params->network           = 'mainnet';
         $element->payment_params->min_confirmations = '10';
+        $element->payment_params->index_offset      = '0';
+        $element->payment_params->rate_source       = 'coingecko';
+        $element->payment_params->fixed_rate        = '';
+        $element->payment_params->rate_url          = '';
         $element->payment_params->order_status      = 'created';
         $element->payment_params->paid_status       = 'confirmed';
         $element->payment_params->status_notif_email = '0';

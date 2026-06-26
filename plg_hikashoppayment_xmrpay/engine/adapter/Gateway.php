@@ -67,7 +67,8 @@ class Gateway
      */
     public function indexForOrder(int $orderId): int
     {
-        return max(1, $orderId + (int) ($this->cfg['index_offset'] ?? 0));
+        // clamp the offset to >= 0 so a negative value can't collapse several orders onto index 1
+        return max(1, $orderId + max(0, (int) ($this->cfg['index_offset'] ?? 0)));
     }
 
     /** The receiving subaddress for an order. Derived from the primary address and view key alone. */

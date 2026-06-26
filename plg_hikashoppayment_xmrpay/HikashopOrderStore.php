@@ -35,7 +35,7 @@ class HikashopOrderStore implements OrderStore
 
     public function loadPending(): iterable
     {
-        $db    = \Joomla\CMS\Factory::getDbo();
+        $db    = \Joomla\CMS\Factory::getContainer()->get(\Joomla\Database\DatabaseInterface::class);
         $query = $db->getQuery(true)
             ->select($db->quoteName('order_id'))
             ->from($db->quoteName('#__hikashop_order'))
@@ -114,7 +114,7 @@ class HikashopOrderStore implements OrderStore
     public function isSettled(string $txid): bool
     {
         try {
-            $db = \Joomla\CMS\Factory::getDbo();
+            $db = \Joomla\CMS\Factory::getContainer()->get(\Joomla\Database\DatabaseInterface::class);
             $db->setQuery('SELECT COUNT(*) FROM ' . $db->quoteName('#__xmrpay_txids') . ' WHERE ' . $db->quoteName('txid') . ' = ' . $db->quote($txid));
             return (bool) $db->loadResult();
         } catch (\Throwable $e) {
@@ -127,7 +127,7 @@ class HikashopOrderStore implements OrderStore
 
     public function markPaid(int $orderId, string $txid, array $verdict): void
     {
-        $db = \Joomla\CMS\Factory::getDbo();
+        $db = \Joomla\CMS\Factory::getContainer()->get(\Joomla\Database\DatabaseInterface::class);
 
         // claim the txid first: the UNIQUE index is the real guard against two overlapping runs both
         // crediting. if the insert loses the race, another run already settled it — stop here.
