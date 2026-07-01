@@ -42,7 +42,7 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         'rate_url'           => array('XMRPAY_RATE_URL', 'input', ''),
         'order_status'       => array('XMRPAY_PENDING_STATUS', 'orderstatus', 'created'),
         'paid_status'        => array('XMRPAY_PAID_STATUS', 'orderstatus', 'confirmed'),
-        'status_notif_email' => array('ORDER_STATUS_NOTIFICATION', 'boolean', '0'),
+        'status_notif_email' => array('ORDER_STATUS_NOTIFICATION', 'boolean', '1'),
         'return_url'         => array('XMRPAY_RETURN_URL', 'input', ''),
     );
 
@@ -62,7 +62,7 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         $element->payment_params->rate_url          = '';
         $element->payment_params->order_status      = 'created';
         $element->payment_params->paid_status       = 'confirmed';
-        $element->payment_params->status_notif_email = '0';
+        $element->payment_params->status_notif_email = '1';
         $element->payment_params->return_url        = '';
     }
 
@@ -138,9 +138,11 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
             $this->xmr_error      = true;
         }
 
-        // keep the order in its pending status (matches the offline plugins' pattern)
+        // keep the order in its pending status (matches the offline plugins' pattern). don't email on
+        // this transition — HikaShop already sends the "order created" mail; the customer notification
+        // fires later, once the payment actually confirms (see HikashopOrderStore::markPaid).
         if (!empty($this->payment_params->order_status) && $order->order_status != $this->payment_params->order_status) {
-            $this->modifyOrder($orderId, $this->payment_params->order_status, (bool) @$this->payment_params->status_notif_email, false);
+            $this->modifyOrder($orderId, $this->payment_params->order_status, false, false);
         }
         $this->removeCart = true;
 
@@ -224,7 +226,7 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
             'rate_url'          => isset($p->rate_url) ? $p->rate_url : '',
             'pending_status'    => !empty($p->order_status) ? $p->order_status : 'created',
             'paid_status'       => !empty($p->paid_status) ? $p->paid_status : 'confirmed',
-            'notify_email'      => (bool) (isset($p->status_notif_email) ? $p->status_notif_email : 0),
+            'notify_email'      => (bool) (isset($p->status_notif_email) ? $p->status_notif_email : 1),
         );
     }
 

@@ -160,7 +160,10 @@ class HikashopOrderStore implements OrderStore
         // retries — otherwise the order is stuck forever (txid consumed, status never promoted).
         try {
             $oid = $orderId;   // modifyOrder takes the id by reference
-            hikashop_get('class.order')->modifyOrder($oid, $this->paidStatus, $this->methodName, $history, null, array('xmrpay_txid' => $txid));
+            // $history['notified'] drives the CUSTOMER "order status changed" email; passing false (not
+            // null) as $email lets HikaShop also send the store's own payment-notification email when the
+            // merchant has configured a payment_notification_email address (null would suppress it).
+            hikashop_get('class.order')->modifyOrder($oid, $this->paidStatus, $this->methodName, $history, false, array('xmrpay_txid' => $txid));
         } catch (\Throwable $e) {
             try {
                 $db->setQuery('DELETE FROM ' . $db->quoteName('#__xmrpay_txids') . ' WHERE ' . $db->quoteName('txid') . ' = ' . $db->quote($txid));
