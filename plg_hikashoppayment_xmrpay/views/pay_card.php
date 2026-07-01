@@ -50,6 +50,8 @@ $locked    = ((string) $xmr !== '');   // was the price actually locked? if not,
 @media (prefers-reduced-motion: reduce){.xmrpay-pay__dot{animation:none;}}
 .xmrpay-pay__status.paid{color:var(--ok);}
 .xmrpay-pay__status.paid .xmrpay-pay__dot{background:var(--ok);animation:none;box-shadow:none;}
+.xmrpay-pay__status.warn{color:#b45309;font-weight:600;}
+.xmrpay-pay__status.warn .xmrpay-pay__dot{background:#f59e0b;animation:none;box-shadow:none;}
 .xmrpay-pay__hint{font-size:12px;color:var(--mut);margin-top:8px;}
 .xmrpay-pay__notice{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;border-radius:10px;padding:12px 14px;font-size:13px;text-align:left;margin:4px 0 16px;}
 .xmrpay-pay__foot{display:flex;align-items:center;justify-content:center;gap:14px;padding:13px 20px;border-top:1px solid var(--line);background:var(--soft);font-size:12px;}
@@ -141,7 +143,9 @@ $locked    = ((string) $xmr !== '');   // was the price actually locked? if not,
 <?php if ($locked && !empty($pollUrl)) : ?>
 <script>
 (function(){
-  var url=<?php echo json_encode($pollUrl); ?>, ret=<?php echo json_encode($returnUrl); ?>, done=false, errs=0;
+  var url=<?php echo json_encode($pollUrl); ?>, ret=<?php echo json_encode($returnUrl); ?>, done=false, errs=0, warns=0;
+  var dot='<span class="xmrpay-pay__dot" aria-hidden="true"></span> ';
+  function set(cls,msg){ var s=document.getElementById('xmrpay-status'); if(s){ s.className='xmrpay-pay__status'+(cls?' '+cls:''); s.innerHTML=dot+msg; } }
   function poll(){
     if(done) return;
     fetch(url,{credentials:'same-origin',headers:{'Accept':'application/json'}})
@@ -149,11 +153,16 @@ $locked    = ((string) $xmr !== '');   // was the price actually locked? if not,
       .then(function(d){
         errs=0;
         if(d&&d.paid){
-          done=true;
-          var s=document.getElementById('xmrpay-status');
-          if(s){ s.className='xmrpay-pay__status paid'; s.innerHTML='<span class="xmrpay-pay__dot" aria-hidden="true"></span> Payment received — thank you!'; }
+          done=true; set('paid','Payment received — thank you!');
           setTimeout(function(){ if(ret){window.location=ret;}else{window.location.reload();} },1600);
+          return;
         }
+        // a scan/node problem returns HTTP 200 with a status — surface it instead of waiting forever.
+        if(d&&(d.status==='node-error'||d.status==='crypto-missing'||d.status==='error')){
+          if(++warns>=2){ set('warn', d.status==='crypto-missing'
+            ? 'Payment verification is unavailable on the store right now — please contact the store owner.'
+            : "Can't reach the Monero network at the moment. Your payment is safe — it will confirm automatically once the store reconnects."); }
+        } else { warns=0; set('', 'Waiting for your payment&hellip;'); }
       }).catch(function(){ if(++errs>=20){ done=true; } });  // give up quietly after ~4 min of network errors
   }
   setInterval(poll,12000); poll();
