@@ -130,6 +130,32 @@ class Gateway
         return substr(hash_hmac('sha256', $orderId . '|xmrpay-poll', (string) $secret), 0, 24);
     }
 
+    /**
+     * Buyer-facing partial-payment figures for the checkout poll, or null when there is nothing to
+     * report (no funds yet, or already enough). $receivedPico is what the store recorded after the
+     * last scan; $expectedXmr is the amount locked on the order. When some — but not all — of the
+     * owed amount has arrived, returns ['received'=>string, 'shortfall'=>string] in XMR so the pay
+     * card can tell the buyer exactly how much more to send to the same subaddress. Shared by every
+     * adapter's poll so the "underpaid / paid in installments" UX is identical across carts.
+     */
+    public static function partialFeedback(string $expectedXmr, ?string $receivedPico): ?array
+    {
+        $receivedPico = (string) $receivedPico;
+        if ($receivedPico === '' || $receivedPico === '0') {
+            return null;   // nothing has arrived yet — the normal "waiting" state, not a partial
+        }
+        $expectedPico = (string) Util::xmr_to_pico($expectedXmr);
+        // >= means the full amount (or an overpayment) is present; that path settles, it isn't partial.
+        if (gmp_cmp($receivedPico, $expectedPico) >= 0) {
+            return null;
+        }
+        $shortfallPico = gmp_strval(gmp_sub($expectedPico, $receivedPico));
+        return [
+            'received'  => Util::pico_to_string($receivedPico),
+            'shortfall' => Util::pico_to_string($shortfallPico),
+        ];
+    }
+
     /** Default rate source: XMR per 1 unit of $currency from a public price api. Makes a network call. */
     public static function fetchRate(string $currency): float
     {

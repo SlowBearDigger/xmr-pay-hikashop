@@ -81,6 +81,9 @@ class HikashopOrderStore implements OrderStore
             'matches'         => $matches,
             'xmr_amount'      => (string) (isset($p['xmrpay_amount']) ? $p['xmrpay_amount'] : '0'),
             'status'          => 'pending',
+            // extra (not part of the OrderStore contract; the Settler ignores it): funds seen so far,
+            // so the checkout poll can report partial-payment progress to the buyer.
+            'received_pico'   => (string) (isset($p['xmrpay_received_pico']) ? $p['xmrpay_received_pico'] : '0'),
         );
     }
 

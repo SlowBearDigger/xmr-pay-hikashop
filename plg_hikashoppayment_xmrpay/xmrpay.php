@@ -240,7 +240,22 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         $settler = new Settler($g, $store, array('min_confirmations' => (int) $cfg['min_confirmations']));
         $rep     = $settler->settleOrder($rows);
 
-        return $this->pollResponse($app, !empty($rep['paid']), $rep['status']);
+        $paid   = !empty($rep['paid']);
+        $status = $rep['status'];
+        $extra  = array();
+        // partial-payment feedback: settleOrder just persisted received_pico. if some funds arrived but
+        // it is not yet paid (an underpayment, or the first of several txs), tell the buyer how much
+        // more to send — to the same address, since the engine sums payments to the subaddress.
+        if (!$paid && $status === 'ok') {
+            $after = $store->loadOne($orderId);
+            $pf    = Gateway::partialFeedback((string) $rows['xmr_amount'], $after ? (isset($after['received_pico']) ? $after['received_pico'] : '0') : '0');
+            if ($pf !== null) {
+                $status = 'partial';
+                $extra  = $pf;
+            }
+        }
+
+        return $this->pollResponse($app, $paid, $status, $extra);
     }
 
     // --- helpers ---------------------------------------------------------------------------------
@@ -282,11 +297,11 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         return ($method && isset($method->payment_params)) ? $method->payment_params : new stdClass();
     }
 
-    private function pollResponse($app, $paid, $status)
+    private function pollResponse($app, $paid, $status, $extra = array())
     {
         $app->setHeader('Content-Type', 'application/json', true);
         $app->sendHeaders();
-        echo json_encode(array('paid' => (bool) $paid, 'status' => $status));
+        echo json_encode(array_merge(array('paid' => (bool) $paid, 'status' => $status), (array) $extra));
         $app->close();
     }
 
