@@ -2,7 +2,7 @@
 <extension type="plugin" version="2.5" method="upgrade" group="hikashoppayment">
 	<name>HikaShop Monero (xmr-pay) Payment Plugin</name>
 	<creationDate>June 2026</creationDate>
-	<version>1.0.3</version>
+	<version>1.0.4</version>
 	<author>SlowBearDigger</author>
 	<authorEmail>slowbeardigger@proton.me</authorEmail>
 	<authorUrl>https://github.com/SlowBearDigger</authorUrl>

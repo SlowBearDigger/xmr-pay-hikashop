@@ -297,7 +297,7 @@ class Gateway
             ]);
             $r    = curl_exec($ch);
             $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
+            // curl_close() is a no-op since PHP 8 (handles are freed automatically) and deprecated in 8.5.
             if ($r !== false && $code >= 200 && $code < 300) {
                 return $r;
             }

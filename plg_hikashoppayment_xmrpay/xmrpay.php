@@ -86,10 +86,27 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
                         $this->propagateMessage('XmrPay: the configured address does not look valid.', 'error');
                     } elseif (empty($v['key_match'])) {
                         $this->propagateMessage('XmrPay: the view key does not match the address.', 'error');
+                    } elseif (empty(trim((string) $p->nodes))) {
+                        $this->propagateMessage('XmrPay: no node is configured, so payments will never be detected. Add at least one Monero node (one per line).', 'warning');
+                    } else {
+                        // the keys check above is purely local (no network) -- this is the only place
+                        // that actually confirms the configured node(s) are reachable FROM THIS SERVER,
+                        // so a merchant finds out now instead of when a customer's payment never confirms.
+                        try {
+                            $tip = $g->scanner()->tip_height();
+                        } catch (\Throwable $e) {
+                            $tip = null;
+                        }
+                        if ($tip === null) {
+                            $this->propagateMessage('XmrPay: could not reach any of the configured Monero nodes from this server. Payments will not be detected until this is fixed -- double-check the Nodes field and that your host allows outbound connections to those addresses/ports.', 'warning');
+                        } else {
+                            $this->propagateMessage('XmrPay: connected -- current ' . $p->network . ' block height ' . $tip . '.', 'message');
+                        }
                     }
                 }
             } catch (\Throwable $e) {
-                // a node hiccup at save time must not block saving the config
+                // an unexpected local error (bad config shape, missing extension, etc.) -- not a
+                // network message, since we only reach the network check inside the nested try above.
             }
         }
         return $r;
