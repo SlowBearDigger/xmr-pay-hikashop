@@ -10,6 +10,30 @@ vendored into the plugin (HikaShop ships a zip onto a host with no Composer). Th
 in the engine; this package is the thin HikaShop layer, modelled on HikaShop's bundled offline
 plugins (bank transfer / check).
 
+## Install
+
+1. Download `pkg_xmrpay_hikashop.zip` from the [latest release](../../releases/latest).
+2. Joomla admin → **System → Install → Extensions → Upload Package File** → select the zip. One
+   package installs both the payment plugin and the settlement scheduler task.
+3. **Enable both plugins** — Joomla installs every third-party plugin disabled by default (this is a
+   Joomla-wide behaviour, not specific to this one). Go to **System → Manage → Plugins**, search
+   `xmr-pay`, and enable:
+   - *HikaShop Monero (xmr-pay) Payment Plugin*
+   - *Task - xmr-pay Monero settlement*
+
+   Skipping the second one is the most common setup mistake — the payment method will still work at
+   checkout, but nothing settles once the buyer closes the tab.
+4. In HikaShop, create a new payment method of type **Monero (XMR)**: your wallet's primary address,
+   its private **view key** (never the spend key), one or more Monero nodes (one per line — a public
+   node is fine to start, run your own for real money). Saving now actually tries to reach your
+   node(s) and tells you immediately if it can't.
+5. Create the background sweep: **System → Scheduled Tasks → New Task**, pick **"xmr-pay: settle
+   pending Monero orders"**, save it, and set up Joomla's **Web Cron** (Global Configuration → System
+   tab → Scheduler, or the ad-hoc URL Joomla shows on the task) — HikaShop needs a real web request to
+   run its own code, so the CLI `scheduler:run` console command does not work here; Web Cron does. This
+   sweep is the backstop that settles an order even if the buyer paid and closed the browser tab before
+   the on-page poll caught it.
+
 ## Packages
 
 ```

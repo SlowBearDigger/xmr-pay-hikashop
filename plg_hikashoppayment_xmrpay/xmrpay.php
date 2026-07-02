@@ -88,12 +88,29 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
                         $this->propagateMessage('XmrPay: the view key does not match the address.', 'error');
                     } elseif (empty(trim((string) $p->nodes))) {
                         $this->propagateMessage('XmrPay: no node is configured, so payments will never be detected. Add at least one Monero node (one per line).', 'warning');
+                    } elseif (!\Joomla\CMS\Factory::getApplication()->isClient('administrator')) {
+                        // this hook can in principle be reached from a non-interactive path (a CLI
+                        // provisioning script, a bulk config import); only probe the network from an
+                        // actual admin-backend request, so a script updating params in bulk never
+                        // inherits a slow/blocking network call it didn't ask for.
                     } else {
                         // the keys check above is purely local (no network) -- this is the only place
                         // that actually confirms the configured node(s) are reachable FROM THIS SERVER,
                         // so a merchant finds out now instead of when a customer's payment never confirms.
+                        // tip_height() queries EVERY configured node (by design -- a lying node can only
+                        // delay settlement, never accelerate it, see Scanner::tip_height). a short
+                        // dedicated timeout keeps a save with several dead nodes from hanging the admin
+                        // request past PHP's/the webserver's execution limit; the real settlement scan
+                        // (Settler/task) is unaffected, it builds its own Gateway with the normal timeout.
                         try {
-                            $tip = $g->scanner()->tip_height();
+                            $probeCfg = $this->cfgFromParams($p);
+                            $probeCfg['http_timeout'] = 5;
+                            // cap how many of the configured nodes this save-time probe touches, so a
+                            // long pasted list can't push the worst case (5s x count) past the save
+                            // request's own time budget; the real settlement scan is not capped.
+                            $probeNodes = preg_split('/[\r\n,]+/', (string) $probeCfg['nodes']);
+                            $probeCfg['nodes'] = implode(',', array_slice(array_filter($probeNodes), 0, 6));
+                            $tip = (new Gateway($probeCfg))->scanner()->tip_height();
                         } catch (\Throwable $e) {
                             $tip = null;
                         }
