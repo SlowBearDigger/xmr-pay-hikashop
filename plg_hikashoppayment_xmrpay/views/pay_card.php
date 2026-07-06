@@ -156,7 +156,7 @@ $locked    = ((string) $xmr !== '');   // was the price actually locked? if not,
         errs=0;
         if(d&&d.paid){
           done=true; set('paid','Payment received — thank you!');
-          setTimeout(function(){ if(ret){window.location=ret;}else{window.location.reload();} },1600);
+          if(ret){ setTimeout(function(){ window.location=ret; },1600); }
           return;
         }
         // a partial payment: some funds arrived but less than owed. tell the buyer exactly how much
