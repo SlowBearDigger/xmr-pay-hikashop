@@ -108,10 +108,14 @@ class HikashopOrderStore implements OrderStore
         if (array_key_exists('subaddress', $patch))      $p->xmrpay_subaddress      = (string) $patch['subaddress'];
         if (array_key_exists('rate', $patch) && $patch['rate'] !== null) $p->xmrpay_rate = (string) $patch['rate'];
 
-        $update                       = new stdClass();
-        $update->order_id             = $orderId;
-        $update->order_payment_params = $p;   // class.order::save serializes it
-        $orderClass->save($update);
+        $db    = \Joomla\CMS\Factory::getContainer()->get(\Joomla\Database\DatabaseInterface::class);
+        $query = $db->getQuery(true)
+            ->update($db->quoteName('#__hikashop_order'))
+            ->set($db->quoteName('order_payment_params') . ' = ' . $db->quote(serialize($p)))
+            ->set($db->quoteName('order_modified') . ' = ' . time())
+            ->where($db->quoteName('order_id') . ' = ' . (int) $orderId);
+        $db->setQuery($query);
+        $db->execute();
     }
 
     public function isSettled(string $txid): bool
@@ -163,10 +167,14 @@ class HikashopOrderStore implements OrderStore
         // retries — otherwise the order is stuck forever (txid consumed, status never promoted).
         try {
             $oid = $orderId;   // modifyOrder takes the id by reference
-            // $history['notified'] drives the CUSTOMER "order status changed" email; passing false (not
-            // null) as $email lets HikaShop also send the store's own payment-notification email when the
-            // merchant has configured a payment_notification_email address (null would suppress it).
-            hikashop_get('class.order')->modifyOrder($oid, $this->paidStatus, $this->methodName, $history, false, array('xmrpay_txid' => $txid));
+            if ($this->hasStatefulApplication()) {
+                // $history['notified'] drives the CUSTOMER "order status changed" email; passing false
+                // (not null) as $email lets HikaShop also send the store's own payment-notification email
+                // when the merchant has configured a payment_notification_email address.
+                hikashop_get('class.order')->modifyOrder($oid, $this->paidStatus, $this->methodName, $history, false, array('xmrpay_txid' => $txid));
+            } else {
+                $this->markPaidDirect($orderId, $txid, $history);
+            }
         } catch (\Throwable $e) {
             try {
                 $db->setQuery('DELETE FROM ' . $db->quoteName('#__xmrpay_txids') . ' WHERE ' . $db->quoteName('txid') . ' = ' . $db->quote($txid));
@@ -175,5 +183,64 @@ class HikashopOrderStore implements OrderStore
             }
             throw $e;
         }
+    }
+
+    private function hasStatefulApplication(): bool
+    {
+        try {
+            $app = \Joomla\CMS\Factory::getApplication();
+            return method_exists($app, 'getUserState') && method_exists($app, 'setUserState');
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    private function markPaidDirect(int $orderId, string $txid, array $history): void
+    {
+        $db = \Joomla\CMS\Factory::getContainer()->get(\Joomla\Database\DatabaseInterface::class);
+
+        $db->setQuery(
+            'SELECT ' . $db->quoteName('order_payment_params') .
+            ' FROM ' . $db->quoteName('#__hikashop_order') .
+            ' WHERE ' . $db->quoteName('order_id') . ' = ' . (int) $orderId
+        );
+        $raw = $db->loadResult();
+        $p   = function_exists('hikashop_unserialize') ? hikashop_unserialize($raw) : @unserialize((string) $raw);
+        $p   = is_object($p) ? $p : new stdClass();
+        $p->xmrpay_txid = $txid;
+
+        $query = $db->getQuery(true)
+            ->update($db->quoteName('#__hikashop_order'))
+            ->set($db->quoteName('order_status') . ' = ' . $db->quote($this->paidStatus))
+            ->set($db->quoteName('order_payment_params') . ' = ' . $db->quote(serialize($p)))
+            ->set($db->quoteName('order_modified') . ' = ' . time())
+            ->where($db->quoteName('order_id') . ' = ' . (int) $orderId)
+            ->where($db->quoteName('order_status') . ' = ' . $db->quote($this->pendingStatus))
+            ->where($db->quoteName('order_payment_method') . ' = ' . $db->quote($this->methodName));
+        if ($this->paymentId > 0) {
+            $query->where($db->quoteName('order_payment_id') . ' = ' . (int) $this->paymentId);
+        }
+        $db->setQuery($query);
+        $db->execute();
+
+        if ($db->getAffectedRows() < 1) {
+            throw new RuntimeException('HikaShop order was not updated');
+        }
+
+        $row                         = new stdClass();
+        $row->history_order_id       = $orderId;
+        $row->history_created        = time();
+        $row->history_ip             = '';
+        $row->history_new_status     = $this->paidStatus;
+        $row->history_reason         = class_exists('JText') ? \JText::sprintf('AUTOMATIC_PAYMENT_NOTIFICATION') : 'Automatic payment notification';
+        $row->history_notified       = 0;
+        $row->history_amount         = !empty($history['amount']) ? (string) $history['amount'] : '';
+        $row->history_package_id     = 0;
+        $row->history_payment_id     = $this->paymentId > 0 ? (string) $this->paymentId : '';
+        $row->history_payment_method = $this->methodName;
+        $row->history_data           = !empty($history['data']) ? (string) $history['data'] : ('XMR txid: ' . $txid);
+        $row->history_type           = !empty($history['type']) ? (string) $history['type'] : 'payment';
+        $row->history_user_id        = 0;
+        $db->insertObject('#__hikashop_history', $row);
     }
 }
