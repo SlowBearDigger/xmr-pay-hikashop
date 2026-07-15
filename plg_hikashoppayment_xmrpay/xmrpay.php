@@ -34,6 +34,7 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         'address'            => array('XMRPAY_ADDRESS', 'input', ''),
         'view_key'           => array('XMRPAY_VIEW_KEY', 'input', ''),
         'nodes'              => array('XMRPAY_NODES', 'textarea', ''),
+        'http_timeout'       => array('XMRPAY_HTTP_TIMEOUT', 'input', '20'),
         'network'            => array('XMRPAY_NETWORK', 'list', array('mainnet' => 'mainnet', 'stagenet' => 'stagenet', 'testnet' => 'testnet')),
         'min_confirmations'  => array('XMRPAY_MIN_CONFIRMATIONS', 'input', '10'),
         'index_offset'       => array('XMRPAY_INDEX_OFFSET', 'input', '0'),
@@ -54,6 +55,7 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         $element->payment_params->address           = '';
         $element->payment_params->view_key          = '';
         $element->payment_params->nodes             = '';
+        $element->payment_params->http_timeout      = '20';
         $element->payment_params->network           = 'mainnet';
         $element->payment_params->min_confirmations = '10';
         $element->payment_params->index_offset      = '0';
@@ -64,6 +66,16 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         $element->payment_params->paid_status       = 'confirmed';
         $element->payment_params->status_notif_email = '1';
         $element->payment_params->return_url        = '';
+    }
+
+    /** Load the progressive node editor only on the HikaShop payment settings screen. */
+    public function onPaymentConfiguration(&$element)
+    {
+        parent::onPaymentConfiguration($element);
+        $doc  = \Joomla\CMS\Factory::getDocument();
+        $base = \Joomla\CMS\Uri\Uri::root(true) . '/plugins/hikashoppayment/xmrpay/assets/';
+        $doc->addStyleSheet($base . 'admin-nodes.css');
+        $doc->addScript($base . 'admin-nodes.js');
     }
 
     /**
@@ -94,31 +106,13 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
                         // actual admin-backend request, so a script updating params in bulk never
                         // inherits a slow/blocking network call it didn't ask for.
                     } else {
-                        // the keys check above is purely local (no network) -- this is the only place
-                        // that actually confirms the configured node(s) are reachable FROM THIS SERVER,
-                        // so a merchant finds out now instead of when a customer's payment never confirms.
-                        // tip_height() queries EVERY configured node (by design -- a lying node can only
-                        // delay settlement, never accelerate it, see Scanner::tip_height). a short
-                        // dedicated timeout keeps a save with several dead nodes from hanging the admin
-                        // request past PHP's/the webserver's execution limit; the real settlement scan
-                        // (Settler/task) is unaffected, it builds its own Gateway with the normal timeout.
                         try {
                             $probeCfg = $this->cfgFromParams($p);
-                            $probeCfg['http_timeout'] = 5;
-                            // cap how many of the configured nodes this save-time probe touches, so a
-                            // long pasted list can't push the worst case (5s x count) past the save
-                            // request's own time budget; the real settlement scan is not capped.
-                            $probeNodes = preg_split('/[\r\n,]+/', (string) $probeCfg['nodes']);
-                            $probeCfg['nodes'] = implode(',', array_slice(array_filter($probeNodes), 0, 6));
-                            $tip = (new Gateway($probeCfg))->scanner()->tip_height();
+                            $results  = $this->probeNodes($probeCfg);
                         } catch (\Throwable $e) {
-                            $tip = null;
+                            $results = null;
                         }
-                        if ($tip === null) {
-                            $this->propagateMessage('XmrPay: could not reach any of the configured Monero nodes from this server. Payments will not be detected until this is fixed -- double-check the Nodes field and that your host allows outbound connections to those addresses/ports.', 'warning');
-                        } else {
-                            $this->propagateMessage('XmrPay: connected -- current ' . $p->network . ' block height ' . $tip . '.', 'message');
-                        }
+                        $this->reportNodeProbe($results);
                     }
                 }
             } catch (\Throwable $e) {
@@ -267,6 +261,7 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
             'address'           => isset($p->address) ? $p->address : '',
             'view_key'          => isset($p->view_key) ? $p->view_key : '',
             'nodes'             => isset($p->nodes) ? $p->nodes : '',
+            'http_timeout'      => max(2, min(60, (int) (isset($p->http_timeout) ? $p->http_timeout : 20))),
             'network'           => !empty($p->network) ? $p->network : 'mainnet',
             'min_confirmations' => (int) (isset($p->min_confirmations) ? $p->min_confirmations : 10),
             'index_offset'      => (int) (isset($p->index_offset) ? $p->index_offset : 0),
@@ -308,5 +303,54 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
     private function propagateMessage($msg, $type = 'message')
     {
         \Joomla\CMS\Factory::getApplication()->enqueueMessage($msg, $type);
+    }
+
+    /** Check every saved node independently so a broken secondary is never hidden by failover. */
+    private function probeNodes(array $cfg)
+    {
+        $nodes   = \XmrPay\NodeConfig::normalizeList($cfg['nodes']);
+        $public  = \XmrPay\NodeConfig::publicList($nodes);
+        // a short dedicated timeout, and a cap on how many rows this save-time probe touches,
+        // keep a save with several dead nodes from hanging the admin request past PHP's/the
+        // webserver's execution limit; the real settlement scan (Settler/task) is unaffected,
+        // it builds its own Gateway with the configured timeout.
+        $cfg['http_timeout'] = 5;
+        $results = array();
+        foreach (array_slice($nodes, 0, 6, true) as $index => $node) {
+            $one          = $cfg;
+            $one['nodes'] = array($node);
+            $scanner      = (new Gateway($one))->scanner();
+            $tip          = $scanner->tip_height();
+            $error        = method_exists($scanner, 'last_node_error') ? $scanner->last_node_error() : array();
+            $results[]    = array(
+                'number' => $index + 1,
+                'url'    => isset($public[$index]['url']) ? $public[$index]['url'] : '',
+                'tip'    => $tip,
+                'error'  => isset($error['code']) ? $error['code'] : 'unavailable',
+            );
+        }
+        return $results;
+    }
+
+    /** Node failures are warnings only. Saving remains non-blocking and explicit. */
+    private function reportNodeProbe($results)
+    {
+        if (!is_array($results)) {
+            $this->propagateMessage('XmrPay: node settings were saved, but could not be checked. Review the node rows and try again.', 'warning');
+            return;
+        }
+        $failed = array_values(array_filter($results, function ($row) { return $row['tip'] === null; }));
+        if (!$failed) {
+            $this->propagateMessage('XmrPay: checked ' . count($results) . ' Monero node(s). All are connected.', 'message');
+            return;
+        }
+        $details = array_map(function ($row) {
+            return 'Node ' . $row['number'] . ' (' . $row['url'] . '): ' . $row['error'];
+        }, $failed);
+        $working = count($results) - count($failed);
+        $suffix  = $working > 0
+            ? ' Working nodes remain active. Review or replace the unavailable node(s).'
+            : ' Settings were saved, but payment detection will wait until a node reconnects.';
+        $this->propagateMessage('XmrPay: checked ' . count($results) . ' node(s). ' . implode('; ', $details) . '.' . $suffix, 'warning');
     }
 }
