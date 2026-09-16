@@ -37,6 +37,7 @@ class Scanner {
 	private $cn;
 	private $http_timeout;
 	private $network;
+	private $last_node_error = array( 'code' => 'none', 'node_index' => null, 'url' => '' );
 
 	/**
 	 * $network ('mainnet'|'stagenet'|'testnet') only affects subaddress STRING generation
@@ -45,14 +46,10 @@ class Scanner {
 	 * address string. Defaults to mainnet.
 	 */
 	public function __construct( $node, $network = 'mainnet', $http_timeout = 20 ) {
-		// $node is one URL or a comma-separated list. The extras give node_rpc FAILOVER (try each
-		// until one answers) and a conservative tip_height CROSS-CHECK (min height across
-		// responders) — so a lagging or lying node can only DELAY settlement, never bring it
-		// forward. Heavy calls (tx fetch, get_block) inherit failover via node_rpc/json_rpc.
-		// accept a comma- OR newline-separated list (the config textarea says "one per line")
-		$list               = is_array( $node ) ? $node : preg_split( '/[\r\n,]+/', (string) $node );
-		$this->nodes        = array_values( array_filter( array_map( function ( $u ) { return rtrim( trim( (string) $u ), '/' ); }, $list ) ) );
-		$this->node         = $this->nodes ? $this->nodes[0] : '';
+		// Node lists provide failover for block lookup. Heights and transaction data
+		// must agree across all configured nodes before a payment can settle.
+		$this->nodes        = NodeConfig::normalizeList( $node );
+		$this->node         = $this->nodes[0];
 		$this->http_timeout = (int) $http_timeout;
 		$this->network      = in_array( $network, array( 'mainnet', 'stagenet', 'testnet' ), true ) ? $network : 'mainnet';
 		$this->cn           = new Cryptonote( $this->network );
@@ -61,52 +58,69 @@ class Scanner {
 	/* ------------------------------------------------------------------ *
 	 *  HTTP — uses wp_remote_post under WordPress, a stream fallback in tests
 	 * ------------------------------------------------------------------ */
-	private function node_rpc( $path, $body ) {
+	private function node_rpc( $path, $body, $required_array_key = null ) {
 		// FAILOVER: try each configured node until one answers. json_rpc() routes through here, so
-		// get_block / get_info inherit failover too. The commitment check validates tx data
+		// get_block inherits failover too. The commitment check validates tx data
 		// regardless of which node served it, so a failover source can't forge a payment.
-		foreach ( $this->nodes as $node ) {
-			$r = $this->node_rpc_one( $node, $path, $body );
-			if ( null !== $r ) { return $r; }
+		$this->reset_node_error();
+		foreach ( $this->nodes as $index => $node ) {
+			$r = $this->node_rpc_one( $node, $index, $path, $body );
+			if ( null === $r ) { continue; }
+			if ( null === $required_array_key || ( isset( $r[ $required_array_key ] ) && is_array( $r[ $required_array_key ] ) ) ) {
+				return $r;
+			}
+			$this->set_node_error( 'malformed-response', $index, $node );
 		}
 		return null;
 	}
 
-	private function node_rpc_one( $node, $path, $body ) {
-		$url     = $node . $path;
+	private function node_rpc_one( $node, $index, $path, $body ) {
+		$url     = $node['url'] . $path;
 		$payload = function_exists( 'wp_json_encode' ) ? wp_json_encode( $body ) : json_encode( $body );
-		if ( function_exists( 'wp_safe_remote_post' ) ) {
+		if ( 'none' === $node['auth'] && function_exists( 'wp_safe_remote_post' ) ) {
 			$res = wp_safe_remote_post( $url, array(
 				'timeout'             => $this->http_timeout,
+				'redirection'         => 0,
 				'headers'             => array( 'Content-Type' => 'application/json' ),
 				'body'                => $payload,
 				'limit_response_size' => 4 * 1024 * 1024, // 4 MB — a real Monero RPC response is ≤ 1 MB
 			) );
 			if ( is_wp_error( $res ) ) {
+				$this->set_node_error( $this->wp_error_code( $res ), $index, $node );
 				return null;
 			}
 			$code = (int) wp_remote_retrieve_response_code( $res );
 			if ( $code < 200 || $code >= 300 ) {
+				$this->set_node_error( $this->http_error_code( $code ), $index, $node );
 				return null;
 			}
 			$raw = wp_remote_retrieve_body( $res );
-			if ( strlen( $raw ) > 4 * 1024 * 1024 ) { return null; }
-			return json_decode( $raw, true );
+			if ( strlen( $raw ) > 4 * 1024 * 1024 ) {
+				$this->set_node_error( 'response-too-large', $index, $node );
+				return null;
+			}
+			return $this->decode_response( $raw, $index, $node );
 		}
 		// non-WP host (Joomla, plain PHP, tests)
-		$raw = $this->http_raw( $url, $payload );
-		if ( null === $raw || strlen( $raw ) > 4 * 1024 * 1024 ) { return null; }
-		return json_decode( $raw, true );
+		$raw = $this->http_raw( $url, $payload, $node, $index );
+		if ( null === $raw ) { return null; }
+		if ( strlen( $raw ) > 4 * 1024 * 1024 ) {
+			$this->set_node_error( 'response-too-large', $index, $node );
+			return null;
+		}
+		return $this->decode_response( $raw, $index, $node );
 	}
 
 	// non-WP transport. curl first so it works where allow_url_fopen is Off (common on hardened
 	// shared hosts), with a stream-wrapper fallback. restricted to http(s) so file:// / data: can
 	// never reach the filesystem, even under XMRPAY_TESTING. returns the raw body or null.
-	private function http_raw( $url, $payload = null ) {
+	private function http_raw( $url, $payload, $node, $index ) {
 		if ( ! in_array( strtolower( (string) parse_url( $url, PHP_URL_SCHEME ) ), array( 'http', 'https' ), true ) ) {
+			$this->set_node_error( 'invalid-scheme', $index, $node );
 			return null;
 		}
-		if ( function_exists( 'curl_init' ) ) {
+		$curl_available = function_exists( 'curl_init' ) && ! ( defined( 'XMRPAY_TESTING_NO_CURL' ) && XMRPAY_TESTING_NO_CURL );
+		if ( $curl_available ) {
 			$ch = curl_init( $url );
 			curl_setopt_array( $ch, array(
 				CURLOPT_RETURNTRANSFER => true,
@@ -114,7 +128,15 @@ class Scanner {
 				CURLOPT_CONNECTTIMEOUT => $this->http_timeout,
 				CURLOPT_PROTOCOLS      => CURLPROTO_HTTP | CURLPROTO_HTTPS,
 				CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+				CURLOPT_FOLLOWLOCATION => false,
 			) );
+			if ( 'basic' === $node['auth'] ) {
+				curl_setopt( $ch, CURLOPT_HTTPAUTH, CURLAUTH_BASIC );
+				curl_setopt( $ch, CURLOPT_USERPWD, $node['username'] . ':' . $node['password'] );
+			} elseif ( 'digest' === $node['auth'] ) {
+				curl_setopt( $ch, CURLOPT_HTTPAUTH, CURLAUTH_DIGEST );
+				curl_setopt( $ch, CURLOPT_USERPWD, $node['username'] . ':' . $node['password'] );
+			}
 			if ( null !== $payload ) {
 				curl_setopt( $ch, CURLOPT_POST, true );
 				curl_setopt( $ch, CURLOPT_POSTFIELDS, $payload );
@@ -122,20 +144,105 @@ class Scanner {
 			}
 			$raw  = curl_exec( $ch );
 			$code = (int) curl_getinfo( $ch, CURLINFO_HTTP_CODE );
+			$errno = curl_errno( $ch );
 			// curl_close() is a no-op since PHP 8 (handles are freed automatically) and deprecated in 8.5.
 			// curl is present: trust its verdict (a failed request fails over to the next node),
 			// never fall through to a transport that needs allow_url_fopen.
-			return ( $raw !== false && $code >= 200 && $code < 300 ) ? $raw : null;
+			if ( false === $raw ) {
+				$this->set_node_error( 28 === $errno ? 'timeout' : 'node-unreachable', $index, $node );
+				return null;
+			}
+			if ( $code < 200 || $code >= 300 ) {
+				$this->set_node_error( $this->http_error_code( $code ), $index, $node );
+				return null;
+			}
+			return $raw;
 		}
-		$opts = array( 'timeout' => $this->http_timeout, 'ignore_errors' => true );
+		if ( 'digest' === $node['auth'] ) {
+			$this->set_node_error( 'digest-unsupported', $index, $node );
+			return null;
+		}
+		$headers = array();
+		if ( 'basic' === $node['auth'] ) {
+			$headers[] = 'Authorization: Basic ' . base64_encode( $node['username'] . ':' . $node['password'] );
+		}
+		$opts = array(
+			'timeout'         => $this->http_timeout,
+			'ignore_errors'   => true,
+			'follow_location' => 0,
+			'max_redirects'   => 0,
+		);
 		if ( null !== $payload ) {
 			$opts['method']  = 'POST';
-			$opts['header']  = "Content-Type: application/json\r\n";
+			$headers[]       = 'Content-Type: application/json';
 			$opts['content'] = $payload;
 		}
+		if ( $headers ) {
+			$opts['header'] = implode( "\r\n", $headers ) . "\r\n";
+		}
 		$ctx = stream_context_create( array( 'http' => $opts ) );
-		$raw = @file_get_contents( $url, false, $ctx );
-		return $raw === false ? null : $raw;
+		$started = microtime( true );
+		$stream = @fopen( $url, 'rb', false, $ctx );
+		if ( false === $stream ) {
+			$this->set_node_error( microtime( true ) - $started >= $this->http_timeout ? 'timeout' : 'node-unreachable', $index, $node );
+			return null;
+		}
+		$raw = stream_get_contents( $stream, 4 * 1024 * 1024 + 1 );
+		$meta = stream_get_meta_data( $stream );
+		fclose( $stream );
+		$status = $this->stream_status_code( isset( $meta['wrapper_data'] ) ? $meta['wrapper_data'] : array() );
+		if ( ! empty( $meta['timed_out'] ) ) {
+			$this->set_node_error( 'timeout', $index, $node );
+			return null;
+		}
+		if ( $status < 200 || $status >= 300 ) {
+			$code = 0 === $status ? 'node-unreachable' : $this->http_error_code( $status );
+			$this->set_node_error( $code, $index, $node );
+			return null;
+		}
+		return false === $raw ? null : $raw;
+	}
+
+	/** Last transport error without credentials or URL userinfo. */
+	public function last_node_error() {
+		return $this->last_node_error;
+	}
+
+	private function reset_node_error() {
+		$this->last_node_error = array( 'code' => 'none', 'node_index' => null, 'url' => '' );
+	}
+
+	private function set_node_error( $code, $index, $node ) {
+		$this->last_node_error = array(
+			'code'       => (string) $code,
+			'node_index' => (int) $index,
+			'url'        => NodeConfig::publicUrl( isset( $node['url'] ) ? $node['url'] : '' ),
+		);
+	}
+
+	private function decode_response( $raw, $index, $node ) {
+		$decoded = json_decode( $raw, true );
+		if ( ! is_array( $decoded ) ) {
+			$this->set_node_error( 'malformed-response', $index, $node );
+			return null;
+		}
+		return $decoded;
+	}
+
+	private function http_error_code( $status ) {
+		if ( 401 === (int) $status || 403 === (int) $status ) { return 'authentication-rejected'; }
+		if ( (int) $status >= 300 && (int) $status < 400 ) { return 'redirect-rejected'; }
+		return 'http-error';
+	}
+
+	private function wp_error_code( $error ) {
+		$code = method_exists( $error, 'get_error_code' ) ? strtolower( (string) $error->get_error_code() ) : '';
+		return false !== strpos( $code, 'timeout' ) ? 'timeout' : 'node-unreachable';
+	}
+
+	private function stream_status_code( $headers ) {
+		if ( ! isset( $headers[0] ) ) { return 0; }
+		return preg_match( '#^HTTP/\S+\s+(\d{3})#i', $headers[0], $matches ) ? (int) $matches[1] : 0;
 	}
 
 	/** Fetch + decode a BATCH of transactions. Returns an array of as_json arrays (each with
@@ -143,22 +250,56 @@ class Scanner {
 	public function fetch_txs( $txids ) {
 		$txids = array_values( array_filter( (array) $txids ) );
 		if ( ! $txids ) { return array(); }
-		$resp = $this->node_rpc( '/get_transactions', array( 'txs_hashes' => $txids, 'decode_as_json' => true ) );
-		if ( ! $resp || ! isset( $resp['txs'] ) || ! is_array( $resp['txs'] ) ) { return null; }
-		$out = array();
-		foreach ( $resp['txs'] as $tx ) {
-			$asjson = isset( $tx['as_json'] ) ? json_decode( $tx['as_json'], true ) : null;
-			if ( ! is_array( $asjson ) ) { continue; }
-			$asjson['_txid']         = isset( $tx['tx_hash'] ) ? $tx['tx_hash'] : '';
-			$asjson['_block_height'] = isset( $tx['block_height'] ) ? (int) $tx['block_height'] : null;
-			$asjson['_in_pool']      = ! empty( $tx['in_pool'] );
-			// the daemon forces this false for on-chain txs and only sets it true for a MEMPOOL tx
-			// whose key images conflict with another pool tx — i.e. a visible double-spend attempt.
-			// only meaningful while in_pool; carried so the 0-conf credit path can refuse it.
-			$asjson['_double_spend_seen'] = ! empty( $tx['double_spend_seen'] );
-			$out[] = $asjson;
+		$wanted = array();
+		foreach ( $txids as $id ) {
+			if ( ! is_string( $id ) || ! preg_match( '/^[0-9a-f]{64}$/i', $id ) ) { return null; }
+			$wanted[ strtolower( $id ) ] = true;
 		}
-		return $out;
+		if ( count( $wanted ) !== count( $txids ) ) { return null; }
+		$body = array( 'txs_hashes' => $txids, 'decode_as_json' => true );
+		$responses = array();
+		if ( count( $this->nodes ) > 1 ) {
+			// Every configured node must attest to the same tx and block height.
+			foreach ( $this->nodes as $index => $node ) {
+				$responses[] = $this->node_rpc_one( $node, $index, '/get_transactions', $body );
+			}
+		} else {
+			$responses[] = $this->node_rpc( '/get_transactions', $body, 'txs' );
+		}
+		$baseline = null;
+		$result = null;
+		foreach ( $responses as $resp ) {
+			if ( ! is_array( $resp ) || ! isset( $resp['txs'] ) || ! is_array( $resp['txs'] ) || count( $resp['txs'] ) !== count( $txids ) ) { return null; }
+			$remaining = $wanted;
+			$rows = array();
+			$evidence = array();
+			foreach ( $resp['txs'] as $tx ) {
+				if ( ! is_array( $tx ) ) { return null; }
+				$hash = strtolower( (string) ( $tx['tx_hash'] ?? '' ) );
+				if ( ! isset( $remaining[ $hash ] ) ) { return null; }
+				$asjson = isset( $tx['as_json'] ) ? json_decode( $tx['as_json'], true ) : null;
+				if ( ! is_array( $asjson ) || ! isset( $asjson['extra'], $asjson['vout'] )
+					|| ! is_array( $asjson['extra'] ) || ! is_array( $asjson['vout'] ) ) { return null; }
+				unset( $remaining[ $hash ] );
+				$asjson['_txid'] = $hash;
+				$asjson['_block_height'] = isset( $tx['block_height'] ) ? (int) $tx['block_height'] : null;
+				$asjson['_in_pool'] = ! empty( $tx['in_pool'] );
+				$asjson['_double_spend_seen'] = ! empty( $tx['double_spend_seen'] );
+				$rows[ $hash ] = $asjson;
+				$evidence[ $hash ] = array(
+					$asjson['_block_height'], $asjson['_in_pool'], $asjson['_double_spend_seen'],
+					$asjson['unlock_time'] ?? 0,
+					$asjson['extra'] ?? array(),
+					$asjson['vout'] ?? array(),
+					$asjson['rct_signatures']['ecdhInfo'] ?? array(),
+					$asjson['rct_signatures']['outPk'] ?? ( $asjson['rctsig_prunable']['outPk'] ?? array() ),
+				);
+			}
+			if ( null !== $baseline && $evidence != $baseline ) { return null; }
+			$baseline = $evidence;
+			$result = $rows;
+		}
+		return array_values( $result );
 	}
 
 	/** Fetch + decode ONE transaction. Returns the as_json array or null. */
@@ -172,7 +313,7 @@ class Scanner {
 
 	/** Monero daemon json_rpc call (POST /json_rpc). Returns the `result` array or null. */
 	private function json_rpc( $method, $params = array() ) {
-		$r = $this->node_rpc( '/json_rpc', array( 'jsonrpc' => '2.0', 'id' => '0', 'method' => $method, 'params' => $params ) );
+		$r = $this->node_rpc( '/json_rpc', array( 'jsonrpc' => '2.0', 'id' => '0', 'method' => $method, 'params' => $params ), 'result' );
 		return ( is_array( $r ) && isset( $r['result'] ) ) ? $r['result'] : null;
 	}
 
@@ -231,11 +372,14 @@ class Scanner {
 
 	/** Node reachability + network. Returns ['ok'=>bool,'height'=>int|null,'nettype'=>string]. */
 	public function node_info() {
-		$r = $this->node_rpc_get_one( $this->node, '/get_info' );
-		if ( is_array( $r ) ) {
-			$nettype = isset( $r['nettype'] ) ? (string) $r['nettype']
-				: ( ! empty( $r['stagenet'] ) ? 'stagenet' : ( ! empty( $r['testnet'] ) ? 'testnet' : 'mainnet' ) );
-			return array( 'ok' => true, 'height' => isset( $r['height'] ) ? (int) $r['height'] : null, 'nettype' => $nettype );
+		$this->reset_node_error();
+		foreach ( $this->nodes as $index => $node ) {
+			$r = $this->node_rpc_get_one( $node, $index, '/get_info' );
+			if ( is_array( $r ) ) {
+				$nettype = isset( $r['nettype'] ) ? (string) $r['nettype']
+					: ( ! empty( $r['stagenet'] ) ? 'stagenet' : ( ! empty( $r['testnet'] ) ? 'testnet' : 'mainnet' ) );
+				return array( 'ok' => true, 'height' => isset( $r['height'] ) ? (int) $r['height'] : null, 'nettype' => $nettype );
+			}
 		}
 		$h = $this->tip_height();   // fall back to /get_height (restricted nodes)
 		return null === $h ? array( 'ok' => false, 'height' => null, 'nettype' => 'unknown' )
@@ -244,38 +388,77 @@ class Scanner {
 
 	/** The non-coinbase tx hashes in a block at $height. Returns array (maybe empty) or null on error. */
 	private function block_tx_hashes( $height ) {
+		if ( count( $this->nodes ) > 1 ) {
+			$body = array( 'jsonrpc' => '2.0', 'id' => '0', 'method' => 'get_block', 'params' => array( 'height' => (int) $height ) );
+			$expected = null;
+			$hashes = null;
+			foreach ( $this->nodes as $index => $node ) {
+				$resp = $this->node_rpc_one( $node, $index, '/json_rpc', $body );
+				$list = $resp['result']['tx_hashes'] ?? null;
+				if ( ! is_array( $list ) ) { return null; }
+				$sorted = array();
+				foreach ( $list as $hash ) {
+					if ( ! is_string( $hash ) || ! preg_match( '/^[0-9a-f]{64}$/i', $hash ) ) { return null; }
+					$sorted[] = strtolower( $hash );
+				}
+				if ( count( array_unique( $sorted ) ) !== count( $sorted ) ) { return null; }
+				sort( $sorted );
+				if ( null !== $expected && $sorted !== $expected ) { return null; }
+				$expected = $sorted;
+				$hashes = $list;
+			}
+			return $hashes;
+		}
 		$r = $this->json_rpc( 'get_block', array( 'height' => (int) $height ) );
-		if ( null === $r ) { return null; }
-		return isset( $r['tx_hashes'] ) && is_array( $r['tx_hashes'] ) ? $r['tx_hashes'] : array();
+		return isset( $r['tx_hashes'] ) && is_array( $r['tx_hashes'] ) ? $r['tx_hashes'] : null;
 	}
 
 	public function tip_height() {
-		// CROSS-CHECK: ask every configured node and take the MINIMUM height among responders.
-		// confirmations = tip - tx_height, so the lowest tip yields the fewest confirmations — a
-		// node that is behind or lying can only DELAY settlement, never accelerate it. null if no
-		// node answered (the caller — scan_order / verify — then declines to act on stale data).
+		// Require a height from every configured node. The lowest height gives
+		// conservative confirmations; an unavailable node pauses settlement.
 		$heights = array();
-		foreach ( $this->nodes as $node ) {
-			$r = $this->node_rpc_get_one( $node, '/get_height' );
-			if ( $r && isset( $r['height'] ) && (int) $r['height'] > 0 ) { $heights[] = (int) $r['height']; }
+		$this->reset_node_error();
+		foreach ( $this->nodes as $index => $node ) {
+			$r = $this->node_rpc_get_one( $node, $index, '/get_height' );
+			if ( $r && isset( $r['height'] ) && (int) $r['height'] > 0 ) {
+				$heights[] = (int) $r['height'];
+			} elseif ( is_array( $r ) ) {
+				$this->set_node_error( 'malformed-response', $index, $node );
+			}
 		}
-		return $heights ? min( $heights ) : null;
+		return $heights && count( $heights ) === count( $this->nodes ) ? min( $heights ) : null;
 	}
-	private function node_rpc_get_one( $node, $path ) {
-		$url = $node . $path;
-		if ( function_exists( 'wp_safe_remote_get' ) ) {
+	private function node_rpc_get_one( $node, $index, $path ) {
+		$url = $node['url'] . $path;
+		if ( 'none' === $node['auth'] && function_exists( 'wp_safe_remote_get' ) ) {
 			$res = wp_safe_remote_get( $url, array(
 				'timeout'             => $this->http_timeout,
+				'redirection'         => 0,
 				'limit_response_size' => 4 * 1024 * 1024,
 			) );
-			if ( is_wp_error( $res ) ) { return null; }
+			if ( is_wp_error( $res ) ) {
+				$this->set_node_error( $this->wp_error_code( $res ), $index, $node );
+				return null;
+			}
+			$code = (int) wp_remote_retrieve_response_code( $res );
+			if ( $code < 200 || $code >= 300 ) {
+				$this->set_node_error( $this->http_error_code( $code ), $index, $node );
+				return null;
+			}
 			$raw = wp_remote_retrieve_body( $res );
-			if ( strlen( $raw ) > 4 * 1024 * 1024 ) { return null; }
-			return json_decode( $raw, true );
+			if ( strlen( $raw ) > 4 * 1024 * 1024 ) {
+				$this->set_node_error( 'response-too-large', $index, $node );
+				return null;
+			}
+			return $this->decode_response( $raw, $index, $node );
 		}
-		$raw = $this->http_raw( $url );
-		if ( null === $raw || strlen( $raw ) > 4 * 1024 * 1024 ) { return null; }
-		return json_decode( $raw, true );
+		$raw = $this->http_raw( $url, null, $node, $index );
+		if ( null === $raw ) { return null; }
+		if ( strlen( $raw ) > 4 * 1024 * 1024 ) {
+			$this->set_node_error( 'response-too-large', $index, $node );
+			return null;
+		}
+		return $this->decode_response( $raw, $index, $node );
 	}
 
 	/* ------------------------------------------------------------------ *
@@ -509,10 +692,15 @@ class Scanner {
 			if ( ( microtime( true ) - $start ) > $budget_s ) { break; }
 			$hashes = $this->block_tx_hashes( $h );
 			if ( null === $hashes ) { break; }                 // node hiccup — resume next tick
+			$incomplete = false;
 			foreach ( array_chunk( $hashes, 50 ) as $batch ) {
 				$txs = $this->fetch_txs( $batch );
-				if ( null === $txs ) { return array( 'found' => false, 'scanned_to' => $last ); }
+				if ( null === $txs ) { $incomplete = true; continue; }
 				foreach ( $txs as $tx ) {
+					if ( ! empty( $tx['_in_pool'] ) || ! isset( $tx['_block_height'] ) || (int) $tx['_block_height'] !== $h ) {
+						$incomplete = true;
+						continue;
+					}
 					$m = $this->detect_in_tx( $tx, $address, $view_key );
 					if ( null === $m ) { continue; }
 					if ( $req_commit && empty( $m['commitment_ok'] ) ) { continue; }
@@ -532,6 +720,7 @@ class Scanner {
 					);
 				}
 			}
+			if ( $incomplete ) { return array( 'found' => false, 'scanned_to' => $last ); }
 			$last = $h;
 		}
 		return array( 'found' => false, 'scanned_to' => $last );
@@ -558,10 +747,15 @@ class Scanner {
 			if ( ( microtime( true ) - $start ) > $budget_s ) { break; }
 			$hashes = $this->block_tx_hashes( $h );
 			if ( null === $hashes ) { break; }                 // node hiccup — resume next tick
+			$incomplete = false;
 			foreach ( array_chunk( $hashes, 50 ) as $batch ) {
 				$txs = $this->fetch_txs( $batch );
-				if ( null === $txs ) { return array( 'matches' => $matches, 'scanned_to' => $last ); }
+				if ( null === $txs ) { $incomplete = true; continue; }
 				foreach ( $txs as $tx ) {
+					if ( ! empty( $tx['_in_pool'] ) || ! isset( $tx['_block_height'] ) || (int) $tx['_block_height'] !== $h ) {
+						$incomplete = true;
+						continue;
+					}
 					$m = $this->detect_in_tx( $tx, $address, $view_key );
 					if ( null === $m ) { continue; }
 					if ( $req_commit && empty( $m['commitment_ok'] ) ) { continue; }
@@ -580,6 +774,7 @@ class Scanner {
 					);
 				}
 			}
+			if ( $incomplete ) { return array( 'matches' => $matches, 'scanned_to' => $last ); }
 			$last = $h;
 		}
 		return array( 'matches' => $matches, 'scanned_to' => $last );

@@ -3,6 +3,7 @@
 namespace XmrPay\Adapter;
 
 use XmrPay\Scanner;
+use XmrPay\NodeConfig;
 use XmrPay\Util;
 
 /**
@@ -41,10 +42,21 @@ class Gateway
     {
         if ($this->scanner === null) {
             $nodes = $this->cfg['nodes'] ?? '';
-            $node  = is_array($nodes) ? implode(',', $nodes) : (string) $nodes;
-            $this->scanner = new Scanner($node, $this->cfg['network'] ?? 'mainnet', (int) ($this->cfg['http_timeout'] ?? 20));
+            $this->scanner = $this->createScanner($nodes, $this->cfg['network'] ?? 'mainnet', (int) ($this->cfg['http_timeout'] ?? 20));
         }
         return $this->scanner;
+    }
+
+    /** Public node metadata for setup diagnostics. Credentials are always omitted. */
+    public function nodeConfig(): array
+    {
+        return NodeConfig::publicList(NodeConfig::normalizeList($this->cfg['nodes'] ?? ''));
+    }
+
+    /** Test seam which keeps Scanner construction in one place without exposing credentials. */
+    protected function createScanner($nodes, string $network, int $timeout)
+    {
+        return new Scanner($nodes, $network, $timeout);
     }
 
     /** True only if the php crypto extensions the engine needs (gmp, bcmath) are present. */

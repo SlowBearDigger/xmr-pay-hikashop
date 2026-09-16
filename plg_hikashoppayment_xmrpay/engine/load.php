@@ -17,6 +17,7 @@ if (!class_exists('XmrPay\\Scanner', false)) {
         '/third-party/monero/ed25519.php',
         '/third-party/monero/Cryptonote.php',
         '/src/Util.php',
+        '/src/NodeConfig.php',
         '/src/Scanner.php',
         '/adapter/Gateway.php',
         '/adapter/OrderStore.php',
