@@ -145,9 +145,9 @@ $locked    = ((string) $xmr !== '');   // was the price actually locked? if not,
 <?php if ($locked && !empty($pollUrl)) : ?>
 <script>
 (function(){
-  var url=<?php echo json_encode($pollUrl); ?>, ret=<?php echo json_encode($returnUrl); ?>, done=false, errs=0, warns=0;
+  var url=<?php echo json_encode($pollUrl, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>, ret=<?php echo json_encode($returnUrl, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>, done=false, errs=0, warns=0;
   var dot='<span class="xmrpay-pay__dot" aria-hidden="true"></span> ';
-  function set(cls,msg){ var s=document.getElementById('xmrpay-status'); if(s){ s.className='xmrpay-pay__status'+(cls?' '+cls:''); s.innerHTML=dot+msg; } }
+  function set(cls,msg){ var s=document.getElementById('xmrpay-status'); if(s){ s.className='xmrpay-pay__status'+(cls?' '+cls:''); s.innerHTML=dot; s.appendChild(document.createTextNode(msg)); } }
   function poll(){
     if(done) return;
     fetch(url,{credentials:'same-origin',headers:{'Accept':'application/json'}})
@@ -156,7 +156,7 @@ $locked    = ((string) $xmr !== '');   // was the price actually locked? if not,
         errs=0;
         if(d&&d.paid){
           done=true; set('paid','Payment received — thank you!');
-          if(ret){ setTimeout(function(){ window.location=ret; },1600); }
+          if(ret){ try{ var target=new URL(ret,location.href); if(target.origin===location.origin && /^https?:$/.test(target.protocol)) setTimeout(function(){ window.location=target.href; },1600); }catch(e){} }
           return;
         }
         // a partial payment: some funds arrived but less than owed. tell the buyer exactly how much
@@ -164,7 +164,7 @@ $locked    = ((string) $xmr !== '');   // was the price actually locked? if not,
         // that doesn't report received/shortfall simply never hits this branch.
         if(d&&d.status==='partial'&&d.received){
           warns=0;
-          set('warn','Received '+d.received+' XMR&nbsp;— please send '+d.shortfall+' XMR more to the same address.');
+          set('warn','Received '+d.received+' XMR — please send '+d.shortfall+' XMR more to the same address.');
           return;
         }
         // a scan/node problem returns HTTP 200 with a status — surface it instead of waiting forever.
@@ -172,7 +172,7 @@ $locked    = ((string) $xmr !== '');   // was the price actually locked? if not,
           if(++warns>=2){ set('warn', d.status==='crypto-missing'
             ? 'Payment verification is unavailable on the store right now — please contact the store owner.'
             : "Can't reach the Monero network at the moment. Your payment is safe — it will confirm automatically once the store reconnects."); }
-        } else { warns=0; set('', 'Waiting for your payment&hellip;'); }
+        } else { warns=0; set('', 'Waiting for your payment…'); }
       }).catch(function(){ if(++errs>=20){ done=true; } });  // give up quietly after ~4 min of network errors
   }
   setInterval(poll,12000); poll();

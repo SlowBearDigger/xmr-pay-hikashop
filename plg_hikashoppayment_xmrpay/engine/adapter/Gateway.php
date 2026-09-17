@@ -213,7 +213,7 @@ class Gateway
     public static function fetchRateFromUrl(string $url, string $currency): float
     {
         $url   = str_replace(['{currency}', '{CURRENCY}'], [strtolower($currency), strtoupper($currency)], $url);
-        $price = self::parsePrice(self::httpGet($url));   // fiat per 1 xmr
+        $price = self::parsePrice(self::httpGet($url, true));   // fiat per 1 xmr
         return $price > 0 ? 1.0 / $price : 0.0;           // xmr per 1 fiat
     }
 
@@ -315,24 +315,52 @@ class Gateway
         ]);
     }
 
-    private static function httpGet(string $url): ?string
+    private static function publicRateTarget(string $url): ?array
     {
+        $parts = parse_url($url);
+        if (!is_array($parts) || strtolower($parts['scheme'] ?? '') !== 'https'
+            || empty($parts['host']) || isset($parts['user']) || isset($parts['pass']) || isset($parts['fragment'])) {
+            return null;
+        }
+        $host = $parts['host'];
+        $port = (int) ($parts['port'] ?? 443);
+        if ($port < 1 || $port > 65535 || !preg_match('/^[a-z0-9.-]+$/iD', $host)) { return null; }
+        $addresses = filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) ? [$host] : gethostbynamel($host);
+        if (!$addresses) { return null; }
+        foreach ($addresses as $ip) {
+            if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) { return null; }
+            $octets = array_map('intval', explode('.', $ip));
+            if (($octets[0] === 100 && $octets[1] >= 64 && $octets[1] <= 127)
+                || ($octets[0] === 198 && ($octets[1] === 18 || $octets[1] === 19))) { return null; }
+        }
+        return [$host, $port, $addresses[0]];
+    }
+
+    private static function httpGet(string $url, bool $custom = false): ?string
+    {
+        $target = $custom ? self::publicRateTarget($url) : null;
+        if ($custom && (!$target || !function_exists('curl_init') || !defined('CURLOPT_RESOLVE'))) { return null; }
         // curl first: the https stream wrapper fails on many hosts (CA bundle / allow_url_fopen),
         // while curl ships its own CA store and is the reliable path. fall back to the wrapper only
         // where curl is unavailable.
         if (function_exists('curl_init')) {
             $ch = curl_init($url);
-            curl_setopt_array($ch, [
+            if ($ch === false) { return null; }
+            if (!curl_setopt_array($ch, [
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_TIMEOUT        => 12,
-                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_FOLLOWLOCATION => !$custom,
                 CURLOPT_HTTPHEADER     => ['Accept: application/json'],
                 CURLOPT_USERAGENT      => 'xmr-pay-adapter',
                 // the rate URL can be a merchant-set custom endpoint: keep a redirect from
                 // reaching file:// / gopher:// etc.
                 CURLOPT_PROTOCOLS       => CURLPROTO_HTTP | CURLPROTO_HTTPS,
                 CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-            ]);
+            ])) { return null; }
+            if ($custom) {
+                if (!curl_setopt($ch, CURLOPT_PROXY, '')
+                    || !curl_setopt($ch, CURLOPT_RESOLVE, [$target[0] . ':' . $target[1] . ':' . $target[2]])) { return null; }
+            }
             $r    = curl_exec($ch);
             $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
             // curl_close() is a no-op since PHP 8 (handles are freed automatically) and deprecated in 8.5.
@@ -340,6 +368,8 @@ class Gateway
                 return $r;
             }
         }
+
+        if ($custom) { return null; }
 
         if (!in_array(strtolower((string) parse_url($url, PHP_URL_SCHEME)), ['http', 'https'], true)) {
             return null;
