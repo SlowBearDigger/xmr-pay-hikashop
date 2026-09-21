@@ -1,3 +1,4 @@
+// Edit and test merchant daemon connections.
 'use strict';
 
 (function (root, factory) {

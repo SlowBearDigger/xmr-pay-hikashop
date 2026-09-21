@@ -1,23 +1,12 @@
 <?php
+// Render the payment card and its status polling.
 
-/**
- * The xmr-pay branded payment card — the single canonical source. Self-contained and scoped under
- * .xmrpay-pay so it renders identically on any cart template. Vendored into each adapter at build
- * time (do not edit the copies). Expects in the including scope:
- *   $uri (monero: URI or ''), $sub (subaddress), $xmr (XMR amount string or '' when the price could
- *   not be locked), $fiat (formatted fiat HTML/text), $err (bool: node/rate hiccup), $qrLibUrl,
- *   $pollUrl (full URL or ''), $returnUrl.
- * The QR is drawn client-side; the subaddress never leaves the browser. Scripts are emitted inline in
- * the body so they run with the DOM nodes already present.
- */
 
-// Joomla defines _JEXEC on every bootstrapped request; non-Joomla hosts (WHMCS, WooCommerce)
-// define XMRPAY_HOST themselves before including this view. Either satisfies the guard.
 (defined('_JEXEC') || defined('XMRPAY_HOST')) or die('Restricted access');
 
 $brandUrl  = 'https://xmrpay.shop';
 $githubUrl = 'https://github.com/SlowBearDigger';
-$locked    = ((string) $xmr !== '');   // was the price actually locked? if not, show a clean error state
+$locked    = ((string) $xmr !== '');
 ?>
 <style>
 .xmrpay-pay{--xmr:#ff6600;--xmr-d:#e65c00;--ink:#1a1a1a;--mut:#6b7280;--line:#e5e7eb;--bg:#fff;--soft:#f9fafb;--ok:#16a34a;
@@ -159,15 +148,11 @@ $locked    = ((string) $xmr !== '');   // was the price actually locked? if not,
           if(ret){ try{ var target=new URL(ret,location.href); if(target.origin===location.origin && /^https?:$/.test(target.protocol)) setTimeout(function(){ window.location=target.href; },1600); }catch(e){} }
           return;
         }
-        // a partial payment: some funds arrived but less than owed. tell the buyer exactly how much
-        // more to send (to the SAME address — the engine sums payments to the subaddress). an adapter
-        // that doesn't report received/shortfall simply never hits this branch.
         if(d&&d.status==='partial'&&d.received){
           warns=0;
           set('warn','Received '+d.received+' XMR — please send '+d.shortfall+' XMR more to the same address.');
           return;
         }
-        // a scan/node problem returns HTTP 200 with a status — surface it instead of waiting forever.
         if(d&&(d.status==='node-error'||d.status==='crypto-missing'||d.status==='error')){
           if(++warns>=2){ set('warn', d.status==='crypto-missing'
             ? 'Payment verification is unavailable on the store right now — please contact the store owner.'

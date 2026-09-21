@@ -1,12 +1,6 @@
 <?php
+// Schedule reconciliation of HikaShop payments.
 
-/**
- * Joomla 5 Scheduler task that settles pending Monero (xmr-pay) orders. Monero has no payment
- * webhook, so on each run we sweep every published xmr-pay HikaShop payment method, scan its pending
- * orders with the view-key engine, and mark paid the ones a confirmed on-chain payment has covered.
- * The heavy lifting is the shared engine + Settler, vendored in the payment plugin; this is just the
- * scheduled entry point. The checkout poll settles a single order on demand; this is the backstop.
- */
 
 namespace XmrPay\Plugin\Task\XmrpaySettle\Extension;
 
@@ -74,7 +68,7 @@ final class XmrpaySettle extends CMSPlugin implements SubscriberInterface
         foreach ($methods as $m) {
             $p = $this->unserializeParams($m->payment_params);
             if (empty($p->address) || empty($p->view_key)) {
-                continue;   // method not configured yet
+                continue;
             }
 
             $cfg = [

@@ -1,9 +1,6 @@
 <?php
+// Render the HikaShop payment response.
 
-/**
- * Checkout instructions screen, rendered by $this->showPage('end') with the plugin object in scope.
- * Maps HikaShop's per-order data onto the shared xmr-pay payment card (views/pay_card.php).
- */
 
 defined('_JEXEC') or die('Restricted access');
 

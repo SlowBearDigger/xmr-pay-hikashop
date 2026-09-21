@@ -1,10 +1,6 @@
 <?php
+// Load the bundled payment engine and adapter.
 
-/**
- * Loads the vendored xmr-pay engine + adapter core without Composer. HikaShop ships as a zip onto a
- * host that has no Composer, so the engine is vendored here and required in dependency order, the
- * same pattern the WooCommerce and WHMCS adapters use. Idempotent: safe to require more than once.
- */
 
 defined('_JEXEC') or die('Restricted access');
 

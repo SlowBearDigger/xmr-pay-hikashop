@@ -1,21 +1,15 @@
 <?php
+// Store payment orders in memory.
 
 namespace XmrPay\Adapter;
 
-/**
- * A minimal in-memory {@see OrderStore}. It is the reference implementation an adapter author copies
- * the shape of, and the fixture the Settler tests drive. A real cart store does the same four things
- * against the cart's own order table instead of an array.
- */
 class ArrayOrderStore implements OrderStore
 {
-    /** @var array<int,array> id => order row */
+
     private array $orders;
 
-    /** @var array<string,bool> txid => credited */
     private array $settledTxids = [];
 
-    /** @param array<int,array> $orders id => row (id, birthday_height, scanned_to, matches, xmr_amount, status) */
     public function __construct(array $orders = [])
     {
         $this->orders = [];
@@ -61,7 +55,6 @@ class ArrayOrderStore implements OrderStore
         }
     }
 
-    /** Test/inspection helper: the current row for an order. */
     public function get(int $orderId): ?array
     {
         return $this->orders[$orderId] ?? null;

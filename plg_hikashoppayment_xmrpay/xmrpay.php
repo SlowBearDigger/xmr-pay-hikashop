@@ -1,15 +1,6 @@
 <?php
+// Integrate Monero payments with HikaShop.
 
-/**
- * xmr-pay for HikaShop — a non-custodial Monero payment method.
- *
- * The order is placed pending at checkout; the buyer is shown a receiving subaddress + the exact XMR
- * amount + a live poll. A Joomla scheduled task (plg_task_xmrpaysettle) and this plugin's poll
- * endpoint settle the order once the engine confirms a real on-chain payment. View key only — no
- * wallet-rpc, no daemon, funds go straight to the merchant. The Monero work lives in the vendored
- * engine + adapter core; this file is the thin HikaShop layer, modelled on the bundled offline
- * plugins (bank transfer / check).
- */
 
 defined('_JEXEC') or die('Restricted access');
 
@@ -25,11 +16,6 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
     public $name     = 'xmrpay';
     public $multiple = true;
 
-    /**
-     * The backend configuration form. order_status is the status an order sits in while it waits for
-     * payment (kept at 'created', not the built-in 'pending', so HikaShop's accepted-payment side
-     * effects do not fire early); paid_status is what a confirmed payment promotes it to.
-     */
     public $pluginConfig = array(
         'address'            => array('XMRPAY_ADDRESS', 'input', ''),
         'view_key'           => array('XMRPAY_VIEW_KEY', 'input', ''),
@@ -47,7 +33,6 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         'return_url'         => array('XMRPAY_RETURN_URL', 'input', ''),
     );
 
-    /** Pre-fills the config form the first time the method is created. */
     public function getPaymentDefaultValues(&$element)
     {
         $element->payment_name        = 'Monero (XMR)';
@@ -68,7 +53,6 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         $element->payment_params->return_url        = '';
     }
 
-    /** Load the progressive node editor only on the HikaShop payment settings screen. */
     public function onPaymentConfiguration(&$element)
     {
         parent::onPaymentConfiguration($element);
@@ -78,10 +62,6 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         $doc->addScript($base . 'admin-nodes.js');
     }
 
-    /**
-     * Validate the merchant's address + view key against each other when they save the config, so a
-     * typo is caught at setup instead of silently failing every payment. Never logs the view key.
-     */
     public function onPaymentConfigurationSave(&$element)
     {
         $r = parent::onPaymentConfigurationSave($element);
@@ -101,10 +81,7 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
                     } elseif (empty(trim((string) $p->nodes))) {
                         $this->propagateMessage('XmrPay: no node is configured, so payments will never be detected. Add at least one Monero node (one per line).', 'warning');
                     } elseif (!\Joomla\CMS\Factory::getApplication()->isClient('administrator')) {
-                        // this hook can in principle be reached from a non-interactive path (a CLI
-                        // provisioning script, a bulk config import); only probe the network from an
-                        // actual admin-backend request, so a script updating params in bulk never
-                        // inherits a slow/blocking network call it didn't ask for.
+
                     } else {
                         try {
                             $probeCfg = $this->cfgFromParams($p);
@@ -116,18 +93,12 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
                     }
                 }
             } catch (\Throwable $e) {
-                // an unexpected local error (bad config shape, missing extension, etc.) -- not a
-                // network message, since we only reach the network check inside the nested try above.
+
             }
         }
         return $r;
     }
 
-    /**
-     * Runs right after the order is placed. Leaves the order pending, locks the XMR amount and the
-     * receiving subaddress onto it, records the chain height as the order's birthday, and renders the
-     * instructions screen (QR + amount + live poll). The order is NOT marked paid here.
-     */
     public function onAfterOrderConfirm(&$order, &$methods, $method_id)
     {
         parent::onAfterOrderConfirm($order, $methods, $method_id);
@@ -140,35 +111,28 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
             $g    = new Gateway($cfg);
             $code = isset($this->currency->currency_code) ? $this->currency->currency_code : '';
             $sub  = $g->subaddressForOrder($orderId);
-            $amt  = $g->xmrAmount((float) $order->order_full_price, $code, Gateway::rateFetcher($cfg));   // locks the rate (merchant source/fixed)
+            $amt  = $g->xmrAmount((float) $order->order_full_price, $code, Gateway::rateFetcher($cfg));
 
-            // persist the locked amount + subaddress NOW, before the tip call can throw — otherwise a
-            // node that's down only for tip_height would lose a perfectly good locked amount and the
-            // order would be unsettleable. the birthday is saved separately right after.
             $store->saveProgress($orderId, array(
                 'subaddress' => $sub,
                 'xmr_amount' => $amt['xmr'],
                 'rate'       => $amt['rate'],
             ));
 
-            $tip = $g->scanner()->tip_height();                              // birthday, null if node down
+            $tip = $g->scanner()->tip_height();
             $store->saveProgress($orderId, array('birthday_height' => (int) $tip));
 
             $this->xmr_subaddress = $sub;
             $this->xmr_amount     = $amt['xmr'];
             $this->xmr_uri        = $g->moneroUri($sub, $amt['xmr'], 'Order ' . $order->order_number);
         } catch (\Throwable $e) {
-            // could not reach a node / price source at checkout: still show the page, the scheduled
-            // task will set the birthday and lock-in happens on the next pass. surface nothing secret.
+
             $this->xmr_subaddress = isset($sub) ? $sub : '';
             $this->xmr_amount     = isset($amt['xmr']) ? $amt['xmr'] : '';
             $this->xmr_uri        = '';
             $this->xmr_error      = true;
         }
 
-        // keep the order in its pending status (matches the offline plugins' pattern). don't email on
-        // this transition — HikaShop already sends the "order created" mail; the customer notification
-        // fires later, once the payment actually confirms (see HikashopOrderStore::markPaid).
         if (!empty($this->payment_params->order_status) && $order->order_status != $this->payment_params->order_status) {
             $this->modifyOrder($orderId, $this->payment_params->order_status, false, false);
         }
@@ -185,11 +149,6 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         return $this->showPage('end');
     }
 
-    /**
-     * The checkout "is it paid yet?" poll, served through HikaShop's notify route. It settles just
-     * this one order on demand (so a buyer who has paid is confirmed without waiting for the next
-     * scheduled sweep) and answers JSON {paid, status}.
-     */
     public function onPaymentNotification(&$statuses)
     {
         $app     = \Joomla\CMS\Factory::getApplication();
@@ -206,20 +165,15 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
 
         $cfg = $this->cfgFromParams($this->paymentParamsForOrder($order));
 
-        // an unconfigured method has an empty view key, which makes the HMAC token guessable. refuse
-        // to answer at all rather than expose a forgeable endpoint.
         if (empty($cfg['view_key'])) {
             return $this->pollResponse($app, false, 'not-found');
         }
 
-        // validate the per-order poll token (HMAC keyed on the view key). without it a stranger could
-        // enumerate order ids and force node scans; respond generically on mismatch, revealing nothing.
         $token = (string) $app->input->getString('token', '');
         if (!hash_equals(Gateway::orderToken($orderId, (string) $cfg['view_key']), $token)) {
             return $this->pollResponse($app, false, 'not-found');
         }
 
-        // already settled: answer paid immediately, do not rescan
         if ($order->order_status === $cfg['paid_status']) {
             return $this->pollResponse($app, true, 'already-paid');
         }
@@ -237,9 +191,7 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         $paid   = !empty($rep['paid']);
         $status = $rep['status'];
         $extra  = array();
-        // partial-payment feedback: settleOrder just persisted received_pico. if some funds arrived but
-        // it is not yet paid (an underpayment, or the first of several txs), tell the buyer how much
-        // more to send — to the same address, since the engine sums payments to the subaddress.
+
         if (!$paid && $status === 'ok') {
             $after = $store->loadOne($orderId);
             $pf    = Gateway::partialFeedback((string) $rows['xmr_amount'], $after ? (isset($after['received_pico']) ? $after['received_pico'] : '0') : '0');
@@ -252,9 +204,6 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         return $this->pollResponse($app, $paid, $status, $extra);
     }
 
-    // --- helpers ---------------------------------------------------------------------------------
-
-    /** Build the engine config array from a HikaShop payment_params object. */
     private function cfgFromParams($p)
     {
         return array(
@@ -284,7 +233,6 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         ));
     }
 
-    /** Load the payment_params for the method attached to an order (used outside checkout). */
     private function paymentParamsForOrder($order)
     {
         $paymentClass = hikashop_get('class.payment');
@@ -305,15 +253,11 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         \Joomla\CMS\Factory::getApplication()->enqueueMessage($msg, $type);
     }
 
-    /** Check every saved node independently so a broken secondary is never hidden by failover. */
     private function probeNodes(array $cfg)
     {
         $nodes   = \XmrPay\NodeConfig::normalizeList($cfg['nodes']);
         $public  = \XmrPay\NodeConfig::publicList($nodes);
-        // a short dedicated timeout, and a cap on how many rows this save-time probe touches,
-        // keep a save with several dead nodes from hanging the admin request past PHP's/the
-        // webserver's execution limit; the real settlement scan (Settler/task) is unaffected,
-        // it builds its own Gateway with the configured timeout.
+
         $cfg['http_timeout'] = 5;
         $results = array();
         foreach (array_slice($nodes, 0, 6, true) as $index => $node) {
@@ -332,7 +276,6 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         return $results;
     }
 
-    /** Node failures are warnings only. Saving remains non-blocking and explicit. */
     private function reportNodeProbe($results)
     {
         if (!is_array($results)) {

@@ -1,8 +1,6 @@
 <?php
+// Register the Joomla payment reconciliation service.
 
-/**
- * Service provider for the xmr-pay settlement task plugin (Joomla 5 namespaced plugin bootstrap).
- */
 
 defined('_JEXEC') or die;
 
