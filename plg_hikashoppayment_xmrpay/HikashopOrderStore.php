@@ -123,45 +123,44 @@ class HikashopOrderStore implements OrderStore
     public function markPaid(int $orderId, string $txid, array $verdict): void
     {
         $db = \Joomla\CMS\Factory::getContainer()->get(\Joomla\Database\DatabaseInterface::class);
-
+        // Keep the pending check, transaction claim and native update atomic.
+        $db->transactionStart(true);
         try {
+            $db->setQuery('SELECT order_status FROM #__hikashop_order WHERE order_id=' . (int) $orderId
+                . ' AND order_payment_method=' . $db->quote($this->methodName)
+                . ($this->paymentId > 0 ? ' AND order_payment_id=' . $this->paymentId : '') . ' FOR UPDATE');
+            if ($db->loadResult() !== $this->pendingStatus) {
+                throw new RuntimeException('Order is no longer pending for this payment method');
+            }
+
             $claim             = new stdClass();
             $claim->txid       = $txid;
             $claim->order_id   = $orderId;
             $claim->settled_at = time();
             $db->insertObject('#__xmrpay_txids', $claim);
-        } catch (\Throwable $e) {
 
-            if (stripos($e->getMessage(), 'duplicate') !== false || stripos($e->getMessage(), '1062') !== false) {
-                return;
+            $history = array(
+                'notified' => $this->notifyEmail ? 1 : 0,
+                'type'     => 'payment',
+                'data'     => 'XMR txid: ' . $txid,
+            );
+            if (!empty($verdict['received_pico'])) {
+                $history['amount'] = $verdict['received_pico'];
             }
-            error_log('[xmr-pay] could not claim txid (is #__xmrpay_txids installed?): ' . $e->getMessage());
-            throw $e;
-        }
 
-        $history = array(
-            'notified' => $this->notifyEmail ? 1 : 0,
-            'type'     => 'payment',
-            'data'     => 'XMR txid: ' . $txid,
-        );
-        if (!empty($verdict['received_pico'])) {
-            $history['amount'] = $verdict['received_pico'];
-        }
-
-        try {
             $oid = $orderId;
             if ($this->hasStatefulApplication()) {
-
                 hikashop_get('class.order')->modifyOrder($oid, $this->paidStatus, $this->methodName, $history, false, array('xmrpay_txid' => $txid));
             } else {
                 $this->markPaidDirect($orderId, $txid, $history);
             }
-        } catch (\Throwable $e) {
-            try {
-                $db->setQuery('DELETE FROM ' . $db->quoteName('#__xmrpay_txids') . ' WHERE ' . $db->quoteName('txid') . ' = ' . $db->quote($txid));
-                $db->execute();
-            } catch (\Throwable $e2) {
+            $db->setQuery('SELECT order_status FROM #__hikashop_order WHERE order_id=' . (int) $orderId);
+            if ($db->loadResult() !== $this->paidStatus) {
+                throw new RuntimeException('Native order status update failed');
             }
+            $db->transactionCommit(true);
+        } catch (\Throwable $e) {
+            $db->transactionRollback(true);
             throw $e;
         }
     }

@@ -77,3 +77,5 @@ Place this repository alongside `xmr-pay-php`, `xmr-pay-adapter-core`,
 `xmr-pay-virtuemart` and `xmr-pay-build`, then run `./build.sh` in the packaging
 repository. Install the resulting package on a Joomla staging site with HikaShop.
 Use matching stagenet keys and nodes; test checkout polling and Web Cron settlement.
+
+Settlement requires InnoDB order, payment and history tables. The pending-state check, transaction claim and native status update share a row lock and transaction. Older installations using nontransactional tables must migrate those tables before enabling settlement.
