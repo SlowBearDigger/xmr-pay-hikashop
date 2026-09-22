@@ -63,14 +63,14 @@ $locked    = ((string) $xmr !== '');
     <?php if (!$locked) : ?>
       <p class="xmrpay-pay__sub">Your order is saved.</p>
       <div class="xmrpay-pay__notice">We couldn't set the Monero price just now (the price source was unreachable).
-        Nothing has been charged — please refresh this page in a moment, or contact the store and we'll send you a
+        Nothing has been charged. Please refresh this page in a moment, or contact the store and we'll send you a
         payment link.</div>
     <?php else : ?>
       <p class="xmrpay-pay__sub">Scan the code or copy the address into your wallet.</p>
 
       <?php if ($err) : ?>
-        <div class="xmrpay-pay__notice">Heads up: a Monero node was briefly unreachable. Your amount below is locked —
-          send it and the order confirms automatically once the network catches up.</div>
+        <div class="xmrpay-pay__notice">A Monero node is unavailable. Your quoted amount is fixed.
+          This page will update when the store can verify your payment.</div>
       <?php endif; ?>
 
       <div class="xmrpay-pay__amount"><?php echo htmlspecialchars((string) $xmr); ?><span>XMR</span></div>
@@ -91,7 +91,7 @@ $locked    = ((string) $xmr !== '');
       <?php endif; ?>
 
       <div class="xmrpay-pay__status" id="xmrpay-status" role="status" aria-live="polite"><span class="xmrpay-pay__dot" aria-hidden="true"></span> Waiting for your payment&hellip;</div>
-      <p class="xmrpay-pay__hint">This page updates by itself — keep it open until it confirms.</p>
+      <p class="xmrpay-pay__hint">This page updates automatically. Keep it open until payment is confirmed.</p>
     <?php endif; ?>
   </div>
 
@@ -125,8 +125,16 @@ $locked    = ((string) $xmr !== '');
     var t=code.textContent;
     var done=function(){ btn.textContent='Copied'; btn.className='xmrpay-pay__copy ok';
       setTimeout(function(){ btn.textContent='Copy'; btn.className='xmrpay-pay__copy'; },1600); };
-    if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(t).then(done,done); }
-    else { var r=document.createRange(); r.selectNode(code); var s=window.getSelection(); s.removeAllRanges(); s.addRange(r); try{document.execCommand('copy');}catch(e){} s.removeAllRanges(); done(); }
+    var fallback=function(){
+      var copied=false, s=window.getSelection();
+      try { var r=document.createRange(); r.selectNode(code); s.removeAllRanges(); s.addRange(r); copied=document.execCommand('copy'); } catch(e){}
+      if(copied){ s.removeAllRanges(); done(); }
+      else { btn.textContent='Copy failed. Select the address manually.'; btn.className='xmrpay-pay__copy'; }
+    };
+    try {
+      if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(t).then(done,fallback); }
+      else fallback();
+    } catch(e){ fallback(); }
   }); }
 })();
 </script>
@@ -144,19 +152,19 @@ $locked    = ((string) $xmr !== '');
       .then(function(d){
         errs=0;
         if(d&&d.paid){
-          done=true; set('paid','Payment received — thank you!');
+          done=true; set('paid','Payment received: thank you!');
           if(ret){ try{ var target=new URL(ret,location.href); if(target.origin===location.origin && /^https?:$/.test(target.protocol)) setTimeout(function(){ window.location=target.href; },1600); }catch(e){} }
           return;
         }
         if(d&&d.status==='partial'&&d.received){
           warns=0;
-          set('warn','Received '+d.received+' XMR — please send '+d.shortfall+' XMR more to the same address.');
+          set('warn','Received '+d.received+' XMR : please send '+d.shortfall+' XMR more to the same address.');
           return;
         }
         if(d&&(d.status==='node-error'||d.status==='crypto-missing'||d.status==='error')){
           if(++warns>=2){ set('warn', d.status==='crypto-missing'
-            ? 'Payment verification is unavailable on the store right now — please contact the store owner.'
-            : "Can't reach the Monero network at the moment. Your payment is safe — it will confirm automatically once the store reconnects."); }
+            ? 'Payment verification is unavailable on the store right now: please contact the store owner.'
+            : "Can't reach the Monero network at the moment. Payment status will update when the store can verify it. Contact the store if the problem persists."); }
         } else { warns=0; set('', 'Waiting for your payment…'); }
       }).catch(function(){ if(++errs>=20){ done=true; } });  // give up quietly after ~4 min of network errors
   }

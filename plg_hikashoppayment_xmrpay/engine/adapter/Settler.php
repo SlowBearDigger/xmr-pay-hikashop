@@ -105,7 +105,7 @@ class Settler
 
         $prevScanned = (int) ($o['scanned_to'] ?? 0);
 
-        $from = $prevScanned > 0 ? max($birthday, min($prevScanned + 1, $tip - $p['reorg'])) : $birthday;
+        $from = $prevScanned > 0 ? max($birthday, min($prevScanned + 1, $tip) - $p['reorg']) : $birthday;
 
         try {
             $res = $this->g->scanRange($id, $from, $tip, ['max_blocks' => $p['max_blocks'], 'time_budget' => $p['time_budget']]);

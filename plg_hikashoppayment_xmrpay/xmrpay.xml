@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <extension type="plugin" version="2.5" method="upgrade" group="hikashoppayment">
 	<name>HikaShop Monero (xmr-pay) Payment Plugin</name>
-	<creationDate>June 2026</creationDate>
-	<version>1.0.9</version>
+	<creationDate>September 2026</creationDate>
+	<version>1.1.0</version>
 	<author>SlowBearDigger</author>
 	<authorEmail>slowbeardigger@proton.me</authorEmail>
 	<authorUrl>https://github.com/SlowBearDigger</authorUrl>
 	<copyright>(C) 2026 SlowBearDigger. MIT licensed.</copyright>
 	<license>https://opensource.org/licenses/MIT MIT</license>
-	<description>Non-custodial Monero payments for HikaShop. View key only — no wallet-rpc, no daemon; funds go straight to the merchant's wallet.</description>
+	<description>Non-custodial Monero payments for HikaShop. View key only: no wallet-rpc, no daemon; funds go straight to the merchant's wallet.</description>
 	<install>
 		<sql>
 			<file driver="mysql" charset="utf8">sql/install.mysql.utf8.sql</file>

@@ -1,7 +1,6 @@
 <?php
 // Load the bundled payment engine and adapter.
 
-
 defined('_JEXEC') or die('Restricted access');
 
 if (!class_exists('XmrPay\\Scanner', false)) {
