@@ -14,6 +14,7 @@ $locked    = ((string) $xmr !== '');
   box-shadow:0 8px 30px rgba(0,0,0,.06);overflow:hidden;color:var(--ink);
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.45;}
 .xmrpay-pay *{box-sizing:border-box;}
+.xmrpay-pay [hidden]{display:none!important;}
 .xmrpay-pay__bar{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--line);}
 .xmrpay-pay__brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px;letter-spacing:-.01em;}
 .xmrpay-pay__mono{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:7px;background:var(--xmr);color:#fff;font-weight:800;font-size:16px;}
@@ -66,6 +67,7 @@ $locked    = ((string) $xmr !== '');
         Nothing has been charged. Please refresh this page in a moment, or contact the store and we'll send you a
         payment link.</div>
     <?php else : ?>
+      <div class="xmrpay-pay__instructions"<?php echo !empty($pollUrl) ? ' hidden' : ''; ?>>
       <p class="xmrpay-pay__sub">Scan the code or copy the address into your wallet.</p>
 
       <?php if ($err) : ?>
@@ -74,7 +76,7 @@ $locked    = ((string) $xmr !== '');
       <?php endif; ?>
 
       <div class="xmrpay-pay__amount"><?php echo htmlspecialchars((string) $xmr); ?><span>XMR</span></div>
-      <?php if ((string) $fiat !== '') : ?><div class="xmrpay-pay__fiat">&asymp; <?php echo htmlspecialchars(strip_tags((string) $fiat), ENT_QUOTES); ?></div><?php endif; ?>
+      <?php if ((string) $fiat !== '') : ?><div class="xmrpay-pay__fiat">Order total: <?php echo htmlspecialchars(strip_tags((string) $fiat), ENT_QUOTES); ?></div><?php endif; ?>
 
       <?php if (!empty($uri)) : ?>
         <div class="xmrpay-pay__qr"><div id="xmrpay-qr" role="img" aria-label="Monero payment QR code" data-uri="<?php echo htmlspecialchars($uri); ?>"></div></div>
@@ -90,6 +92,8 @@ $locked    = ((string) $xmr !== '');
         <a class="xmrpay-pay__open" href="<?php echo htmlspecialchars($uri); ?>">Open in a Monero wallet</a>
       <?php endif; ?>
 
+      </div>
+
       <div class="xmrpay-pay__status" id="xmrpay-status" role="status" aria-live="polite"><span class="xmrpay-pay__dot" aria-hidden="true"></span> Waiting for your payment&hellip;</div>
       <p class="xmrpay-pay__hint">This page updates automatically. Keep it open until payment is confirmed.</p>
     <?php endif; ?>
@@ -104,18 +108,6 @@ $locked    = ((string) $xmr !== '');
 
 <?php if ($locked && !empty($uri)) : ?>
 <script src="<?php echo htmlspecialchars((string) $qrLibUrl, ENT_QUOTES); ?>"></script>
-<script>
-(function(){
-  function draw(){
-    var el=document.getElementById('xmrpay-qr');
-    if(!el) return;
-    if(!window.QRCode){ setTimeout(draw,150); return; }
-    if(el.children.length) return;
-    new QRCode(el,{text:el.getAttribute('data-uri'),width:208,height:208,correctLevel:QRCode.CorrectLevel.M});
-  }
-  draw();
-})();
-</script>
 <?php endif; ?>
 <?php if ($locked) : ?>
 <script>
@@ -139,36 +131,81 @@ $locked    = ((string) $xmr !== '');
 })();
 </script>
 <?php endif; ?>
-<?php if ($locked && !empty($pollUrl)) : ?>
+<?php if ($locked) : ?>
 <script>
 (function(){
-  var url=<?php echo json_encode($pollUrl, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>, ret=<?php echo json_encode($returnUrl, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>, done=false, errs=0, warns=0;
+  var qrElement=document.getElementById('xmrpay-qr'), qr=null, drawnUri='';
+  function draw(){
+    if(!qrElement) return;
+    if(!window.QRCode){ setTimeout(draw,150); return; }
+    var currentUri=qrElement.getAttribute('data-uri');
+    if(currentUri===drawnUri) return;
+    if(qr){ qr.makeCode(currentUri); }
+    else { qr=new QRCode(qrElement,{text:currentUri,width:208,height:208,correctLevel:QRCode.CorrectLevel.M}); }
+    drawnUri=currentUri;
+  }
+  draw();
+  <?php if (!empty($pollUrl)) : ?>
+  var url=<?php echo json_encode($pollUrl, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>, ret=<?php echo json_encode($returnUrl, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>, done=false, inFlight=false, errs=0, warns=0;
+  var originalUri=<?php echo json_encode($uri, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>, originalAmount=<?php echo json_encode((string) $xmr, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+  var wallet=document.querySelector('.xmrpay-pay__open'), amount=document.querySelector('.xmrpay-pay__amount');
+  var instructions=document.querySelectorAll('.xmrpay-pay__instructions,.xmrpay-pay__sub,.xmrpay-pay__amount,.xmrpay-pay__fiat,.xmrpay-pay__qr,.xmrpay-pay__label,.xmrpay-pay__addr,.xmrpay-pay__open');
   var dot='<span class="xmrpay-pay__dot" aria-hidden="true"></span> ';
   function set(cls,msg){ var s=document.getElementById('xmrpay-status'); if(s){ s.className='xmrpay-pay__status'+(cls?' '+cls:''); s.innerHTML=dot; s.appendChild(document.createTextNode(msg)); } }
+  function showInstructions(visible){
+    for(var i=0;i<instructions.length;i++){ instructions[i].hidden=!visible; }
+  }
+  function validAmount(value){
+    return typeof value==='string'&&/^(0|[1-9][0-9]*)(\.[0-9]{1,12})?$/.test(value)&&/[1-9]/.test(value);
+  }
+  function setAmount(value){
+    if(typeof originalUri!=='string'||!validAmount(value)) return false;
+    var paymentUri=originalUri.replace(/([?&]tx_amount=)[^&]*/,function(match,prefix){ return prefix+value; });
+    if(!originalUri||paymentUri===originalUri&&value!==originalAmount) return false;
+    if(wallet) wallet.setAttribute('href',paymentUri);
+    if(amount&&amount.firstChild) amount.firstChild.nodeValue=value;
+    if(qrElement){ qrElement.setAttribute('data-uri',paymentUri); draw(); }
+    return true;
+  }
   function poll(){
-    if(done) return;
+    if(done||inFlight) return;
+    inFlight=true;
     fetch(url,{credentials:'same-origin',headers:{'Accept':'application/json'}})
       .then(function(r){return r.json();})
       .then(function(d){
         errs=0;
-        if(d&&d.paid){
-          done=true; set('paid','Payment received: thank you!');
+        showInstructions(false); set('warn', 'Payment status is unavailable. Please wait before sending another payment.');
+        if(!d||typeof d.paid!=='boolean') return;
+        if(d.paid){
+          done=true; showInstructions(false); set('paid','Payment received: thank you!');
           if(ret){ try{ var target=new URL(ret,location.href); if(target.origin===location.origin && /^https?:$/.test(target.protocol)) setTimeout(function(){ window.location=target.href; },1600); }catch(e){} }
           return;
         }
-        if(d&&d.status==='partial'&&d.received){
-          warns=0;
-          set('warn','Received '+d.received+' XMR : please send '+d.shortfall+' XMR more to the same address.');
+        if(d.status==='partial'){
+          if(validAmount(d.received)&&setAmount(d.shortfall)){
+            warns=0; showInstructions(true);
+            set('warn','Received '+d.received+' XMR : please send '+d.shortfall+' XMR more to the same address.');
+          }
+          return;
+        }
+        if(d&&d.status==='processing'){
+          warns=0; showInstructions(false);
+          set('', 'Payment detected. Waiting for confirmation; please do not send another payment.');
           return;
         }
         if(d&&(d.status==='node-error'||d.status==='crypto-missing'||d.status==='error')){
           if(++warns>=2){ set('warn', d.status==='crypto-missing'
             ? 'Payment verification is unavailable on the store right now: please contact the store owner.'
             : "Can't reach the Monero network at the moment. Payment status will update when the store can verify it. Contact the store if the problem persists."); }
-        } else { warns=0; set('', 'Waiting for your payment…'); }
-      }).catch(function(){ if(++errs>=20){ done=true; } });  // give up quietly after ~4 min of network errors
+        } else if(d&&d.status==='pending') { warns=0; setAmount(originalAmount); showInstructions(true); set('', 'Waiting for your payment…'); }
+      }).catch(function(){
+        showInstructions(false); set('warn', 'Payment status is unavailable. Please wait before sending another payment.');
+        if(++errs>=20){ done=true; }
+      }).then(function(){ inFlight=false; });  // give up quietly after ~4 min of network errors
   }
+  showInstructions(false); set('', 'Checking payment status…');
   setInterval(poll,12000); poll();
+  <?php endif; ?>
 })();
 </script>
 <?php endif; ?>

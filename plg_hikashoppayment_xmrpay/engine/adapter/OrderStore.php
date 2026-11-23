@@ -12,5 +12,6 @@ interface OrderStore
 
     public function isSettled(string $txid): bool;
 
+    /** Recheck invoice eligibility atomically before changing payment state or claims. */
     public function markPaid(int $orderId, string $txid, array $verdict): void;
 }

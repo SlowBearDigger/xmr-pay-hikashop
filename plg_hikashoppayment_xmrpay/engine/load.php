@@ -16,6 +16,8 @@ if (!class_exists('XmrPay\\Scanner', false)) {
         '/src/Scanner.php',
         '/adapter/Gateway.php',
         '/adapter/OrderStore.php',
+        '/adapter/OutputOrderStore.php',
+        '/adapter/InvoicePolicy.php',
         '/adapter/Settler.php',
         '/adapter/ArrayOrderStore.php',
     ] as $f) {

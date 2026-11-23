@@ -149,6 +149,35 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         return $this->showPage('end');
     }
 
+    public function getThankYouContent(&$order)
+    {
+        if (!$this->loadPaymentParams($order)) {
+            return '';
+        }
+        $cfg = $this->cfgFromParams($this->payment_params);
+        $params = (array) $order->order_payment_params;
+        if ($order->order_status !== $cfg['pending_status'] || empty($cfg['view_key'])
+            || empty($params['xmrpay_subaddress']) || empty($params['xmrpay_amount'])
+            || empty($params['xmrpay_birthday_height'])) {
+            return '';
+        }
+
+        // Reopening an issued request must not recalculate its quote or scan birthday.
+        $orderId = (int) $order->order_id;
+        $this->xmr_subaddress = (string) $params['xmrpay_subaddress'];
+        $this->xmr_amount = (string) $params['xmrpay_amount'];
+        $this->xmr_uri = (new Gateway($cfg))->moneroUri($this->xmr_subaddress, $this->xmr_amount, 'Order ' . $order->order_number);
+        $this->xmr_error = false;
+        $this->amount = hikashop_get('class.currency')->format($order->order_full_price, $order->order_currency_id);
+        $this->order_id = $orderId;
+        $this->order_number = $order->order_number;
+        $this->return_url = isset($this->payment_params->return_url) ? $this->payment_params->return_url : '';
+        $this->poll_url = HIKASHOP_LIVE . 'index.php?option=com_hikashop&ctrl=checkout&task=notify&notif_payment=xmrpay&order_id=' . $orderId . '&token=' . Gateway::orderToken($orderId, (string) $cfg['view_key']) . '&tmpl=component';
+        ob_start();
+        $this->showPage('end');
+        return array('html' => ob_get_clean(), 'awaiting_payment' => true);
+    }
+
     public function onPaymentNotification(&$statuses)
     {
         $app     = \Joomla\CMS\Factory::getApplication();
@@ -177,6 +206,9 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         if ($order->order_status === $cfg['paid_status']) {
             return $this->pollResponse($app, true, 'already-paid');
         }
+        if (!$this->isPendingOrder($order, $cfg['pending_status'])) {
+            return $this->pollResponse($app, false, 'not-found');
+        }
 
         $store = $this->store($cfg);
         $rows  = $store->loadOne($orderId);
@@ -192,16 +224,29 @@ class plgHikashoppaymentXmrpay extends hikashopPaymentPlugin
         $status = $rep['status'];
         $extra  = array();
 
+        if (!$paid && !$this->isPendingOrder($orderClass->get($orderId), $cfg['pending_status'])) {
+            return $this->pollResponse($app, false, 'not-found');
+        }
         if (!$paid && $status === 'ok') {
             $after = $store->loadOne($orderId);
-            $pf    = Gateway::partialFeedback((string) $rows['xmr_amount'], $after ? (isset($after['received_pico']) ? $after['received_pico'] : '0') : '0');
-            if ($pf !== null) {
-                $status = 'partial';
-                $extra  = $pf;
+            $scanStatus = isset($rep['scan_status']) ? $rep['scan_status'] : 'incomplete';
+            if (!in_array($scanStatus, array('complete', 'incomplete', 'waiting-birthday', 'reorg-detected'), true)) {
+                $status = 'error';
+            } elseif ($scanStatus !== 'complete' || !$after || ($after['scan_complete'] ?? false) !== true) {
+                $status = 'processing';
+            } else {
+                $extra = Gateway::paymentFeedback((string) $rows['xmr_amount'], $after['received_pico'] ?? null, $after['seen_pico'] ?? null);
+                $status = $extra['status'];
+                unset($extra['status']);
             }
         }
 
         return $this->pollResponse($app, $paid, $status, $extra);
+    }
+
+    private function isPendingOrder($order, $pendingStatus)
+    {
+        return $order && $order->order_payment_method === $this->name && $order->order_status === $pendingStatus;
     }
 
     private function cfgFromParams($p)

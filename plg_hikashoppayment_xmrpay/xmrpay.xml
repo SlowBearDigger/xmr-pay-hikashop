@@ -20,6 +20,7 @@
 		</sql>
 	</uninstall>
 	<files>
+		<filename>LICENSE</filename>
 		<filename plugin="xmrpay">xmrpay.php</filename>
 		<filename>xmrpay_end.php</filename>
 		<filename>HikashopOrderStore.php</filename>

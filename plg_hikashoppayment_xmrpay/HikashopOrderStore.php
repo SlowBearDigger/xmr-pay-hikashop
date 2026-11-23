@@ -65,7 +65,7 @@ class HikashopOrderStore implements OrderStore
             $matches = is_array($decoded) ? $decoded : array();
         }
 
-        return array(
+        $result = array(
             'id'              => $orderId,
             'birthday_height' => (int) (isset($p['xmrpay_birthday_height']) ? $p['xmrpay_birthday_height'] : 0),
             'scanned_to'      => (int) (isset($p['xmrpay_scanned_to']) ? $p['xmrpay_scanned_to'] : 0),
@@ -75,6 +75,13 @@ class HikashopOrderStore implements OrderStore
 
             'received_pico'   => (string) (isset($p['xmrpay_received_pico']) ? $p['xmrpay_received_pico'] : '0'),
         );
+        foreach (array('scan_checkpoint', 'partial_block', 'scan_complete', 'seen_pico',
+            'invoice_status', 'funded_at', 'funded_amount_atomic', 'closed_reason') as $field) {
+            if (array_key_exists('xmrpay_' . $field, $p)) {
+                $result[$field] = $p['xmrpay_' . $field];
+            }
+        }
+        return $result;
     }
 
     public function saveProgress(int $orderId, array $patch): void
@@ -92,6 +99,12 @@ class HikashopOrderStore implements OrderStore
         if (array_key_exists('scanned_to', $patch))      $p->xmrpay_scanned_to      = (int) $patch['scanned_to'];
         if (array_key_exists('matches', $patch))         $p->xmrpay_matches         = json_encode($patch['matches']);
         if (array_key_exists('received_pico', $patch))   $p->xmrpay_received_pico   = (string) $patch['received_pico'];
+        foreach (array('scan_checkpoint', 'partial_block', 'scan_complete', 'seen_pico',
+            'invoice_status', 'funded_at', 'funded_amount_atomic', 'closed_reason') as $field) {
+            if (array_key_exists($field, $patch)) {
+                $p->{'xmrpay_' . $field} = $patch[$field];
+            }
+        }
 
         if (array_key_exists('xmr_amount', $patch))      $p->xmrpay_amount          = (string) $patch['xmr_amount'];
         if (array_key_exists('subaddress', $patch))      $p->xmrpay_subaddress      = (string) $patch['subaddress'];

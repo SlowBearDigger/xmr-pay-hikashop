@@ -63,6 +63,10 @@ The original integration was exercised on Joomla 5.4.6 with HikaShop 6.5.0.
 Rebuilt packages still need a full staging checkout and background-settlement test
 before deployment. Source tests and a prior platform run do not validate a new build.
 
+On HikaShop 6.8, returning to the native thank-you page restores a pending payment
+request from its stored address and quote. Reopening the page does not issue a new
+quote or move the scan birthday.
+
 ### Scheduler note
 
 HikaShop assumes a **web application** (it calls `setUserState()` etc.), so the settlement task runs
@@ -77,5 +81,11 @@ Place this repository alongside `xmr-pay-php`, `xmr-pay-adapter-core`,
 `xmr-pay-virtuemart` and `xmr-pay-build`, then run `./build.sh` in the packaging
 repository. Install the resulting package on a Joomla staging site with HikaShop.
 Use matching stagenet keys and nodes; test checkout polling and Web Cron settlement.
+
+The native storage and payment-page checks require a disposable Joomla bootstrap
+and an existing pending test order. Set `XMRPAY_JOOMLA_BOOTSTRAP` and
+`XMRPAY_TEST_ORDER_ID`, then run `php tests/progress-storage.test.php` and
+`php tests/payment-resume.test.php`. These checks preserve the native order rows;
+they supplement application checkout and settlement tests.
 
 Settlement requires InnoDB order, payment and history tables. The pending-state check, transaction claim and native status update share a row lock and transaction. Older installations using nontransactional tables must migrate those tables before enabling settlement.

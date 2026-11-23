@@ -40,7 +40,7 @@ class Gateway
 
     protected function createScanner($nodes, string $network, int $timeout)
     {
-        return new Scanner($nodes, $network, $timeout);
+        return new Scanner($nodes, $network, $timeout, $this->cfg['minimum_nodes'] ?? 1);
     }
 
     public function cryptoReady(): bool
@@ -102,7 +102,7 @@ class Gateway
         if ($receivedPico === '' || $receivedPico === '0') {
             return null;
         }
-        $expectedPico = (string) Util::xmr_to_pico($expectedXmr);
+        $expectedPico = Util::xmr_to_pico_exact($expectedXmr);
 
         if (gmp_cmp($receivedPico, $expectedPico) >= 0) {
             return null;
@@ -112,6 +112,24 @@ class Gateway
             'received'  => Util::pico_to_string($receivedPico),
             'shortfall' => Util::pico_to_string($shortfallPico),
         ];
+    }
+
+    /** Offer a top-up only when every observed contribution is confirmed. */
+    public static function paymentFeedback(string $expectedXmr, ?string $receivedPico, ?string $seenPico): array
+    {
+        foreach ([$receivedPico, $seenPico] as $amount) {
+            if ($amount === null || !preg_match('/^(0|[1-9][0-9]*)$/D', $amount)) {
+                return ['status' => 'processing'];
+            }
+        }
+        if ($receivedPico !== $seenPico) {
+            return ['status' => 'processing'];
+        }
+        if ($seenPico === '0') {
+            return ['status' => 'pending'];
+        }
+        $partial = self::partialFeedback($expectedXmr, $receivedPico);
+        return $partial === null ? ['status' => 'processing'] : array_merge(['status' => 'partial'], $partial);
     }
 
     public static function fetchRate(string $currency): float
@@ -185,15 +203,54 @@ class Gateway
         ], $opts));
     }
 
+    /** Addresses must be issued requests belonging to this configured wallet. */
+    public function scanBatchRange(array $addresses, int $from, int $to, array $opts = []): array
+    {
+        return $this->scanner()->scan_many($addresses, $this->cfg['view_key'], $from, $to, $opts);
+    }
+
     public function summarizeMatches(array $matches, string $expectedXmr, int $tip, int $minConf): array
+    {
+        $matches = $this->refreshMatches($matches, $tip);
+        return (array) Util::summarize_payments($matches, Util::xmr_to_pico_exact($expectedXmr), '0', $minConf);
+    }
+
+    private function refreshMatches(array $matches, int $tip): array
     {
         foreach ($matches as &$m) {
             if (isset($m['block_height'])) {
                 $m['confirmations'] = max(0, $tip - (int) $m['block_height']);
             }
+            if (isset($m['unlock_time'])) {
+                $m['locked'] = Scanner::is_locked($m['unlock_time'], $tip);
+            }
         }
         unset($m);
-        return (array) Util::summarize_payments($matches, (string) Util::xmr_to_pico($expectedXmr), '0', $minConf);
+        return $matches;
+    }
+
+    public function confirmedOutputs(array $matches, int $tip, int $minConf): array
+    {
+        $receipts = [];
+        foreach (Util::dedup_outputs($this->refreshMatches($matches, $tip)) as $match) {
+            $eligible = Util::summarize_payments([$match], '1', '0', $minConf);
+            if (empty($eligible['paid'])) {
+                continue;
+            }
+            if (!isset($match['txid'], $match['output_index'], $match['out_key'])
+                || !is_string($match['txid']) || preg_match('/^[0-9a-f]{64}$/D', $match['txid']) !== 1
+                || !is_int($match['output_index']) || $match['output_index'] < 0
+                || !is_string($match['out_key']) || preg_match('/^[0-9a-f]{64}$/D', $match['out_key']) !== 1) {
+                throw new \UnexpectedValueException('Confirmed output identity is incomplete');
+            }
+            $receipts[] = [
+                'txid' => $match['txid'],
+                'output_index' => $match['output_index'],
+                'out_key' => $match['out_key'],
+                'amount_atomic' => $match['amount_atomic'],
+            ];
+        }
+        return $receipts;
     }
 
     public static function mergeMatches(array $accumulated, array $fresh, int $from): array
@@ -210,19 +267,49 @@ class Gateway
         return $kept;
     }
 
+    public static function scanComplete(array $result, int $tip): bool
+    {
+        $checkpoint = $result['checkpoint'] ?? null;
+        return is_array($checkpoint)
+            && isset($checkpoint['height'], $checkpoint['hash'])
+            && is_int($checkpoint['height'])
+            && $checkpoint['height'] === ($result['scanned_to'] ?? null)
+            && is_string($checkpoint['hash'])
+            && preg_match('/^[0-9a-f]{64}$/D', $checkpoint['hash']) === 1
+            && $checkpoint['height'] >= $tip - 1
+            && empty($result['reorg_detected'])
+            && empty($result['checkpoint_error'])
+            && empty($result['budget_exhausted'])
+            && empty($result['partial_block'])
+            && (!array_key_exists('scan_complete', $result) || $result['scan_complete'] === true)
+            && empty($result['unsupported_outputs']);
+    }
+
     public function checkOrder(int $orderId, string $expectedXmr, int $birthdayHeight, ?int $minConf = null): array
     {
         $tip = $this->scanner()->tip_height();
+        $nodeError = method_exists($this->scanner(), 'last_node_error')
+            ? $this->scanner()->last_node_error() : ['code' => 'none', 'node_index' => null, 'url' => ''];
         if (null === $tip) {
-            return ['paid' => false, 'status' => 'node-error', 'received_pico' => '0', 'tip' => null];
+            $scanStatus = method_exists($this->scanner(), 'budget_exhausted') && $this->scanner()->budget_exhausted()
+                ? 'budget-exhausted' : 'unavailable';
+            return ['paid' => false, 'status' => 'node-error', 'received_pico' => '0', 'tip' => null,
+                'scan_status' => $scanStatus, 'scan_complete' => false, 'node_error' => $nodeError];
         }
         $minConf = max(1, $minConf ?? (int) ($this->cfg['min_confirmations'] ?? 10));
-        $res     = $this->scanRange($orderId, (int) $birthdayHeight, $tip);
+        $res     = $this->scanRange($orderId, (int) $birthdayHeight, $tip - 1, ['tip' => $tip]);
         $verdict = $this->summarizeMatches($res['matches'] ?? [], $expectedXmr, $tip, $minConf);
+        if (!self::scanComplete($res, $tip)) {
+            $verdict['paid'] = false;
+            $verdict['status'] = 'scan_incomplete';
+        }
         return array_merge($verdict, [
             'subaddress' => $this->subaddressForOrder($orderId),
             'scanned_to' => $res['scanned_to'] ?? $tip,
             'tip'        => $tip,
+            'scan_status' => $res['scan_status'] ?? (self::scanComplete($res, $tip) ? 'complete' : 'incomplete'),
+            'scan_complete' => self::scanComplete($res, $tip),
+            'node_error' => $res['node_error'] ?? $nodeError,
         ]);
     }
 
